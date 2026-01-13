@@ -9,7 +9,91 @@ export const OpencodeMemPlugin = async ({ project, client, directory, worktree }
     10
   )
   const cwd = worktree || directory || process.cwd()
+  const debug = ["1", "true", "yes"].includes(
+    (process.env.OPENCODE_MEM_PLUGIN_DEBUG || "").toLowerCase()
+  )
+  const log = async (level, message, extra = {}) => {
+    if (!debug) {
+      return
+    }
+    await client.app.log({
+      service: "opencode-mem",
+      level,
+      message,
+      extra,
+    })
+  }
+  const pythonBin = process.env.OPENCODE_MEM_PYTHON || "python3"
+  const viewerEnabled = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_VIEWER || "1").toLowerCase()
+  )
+  const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || "127.0.0.1"
+  const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || "37777"
   let sessionStartedAt = null
+  let viewerStarted = false
+  let startupShown = false
+
+  const startViewer = async () => {
+    if (!viewerEnabled || viewerStarted) {
+      return
+    }
+    viewerStarted = true
+    await log("info", "starting opencode-mem viewer", { cwd })
+    Bun.spawn({
+      cmd: [pythonBin, "-m", "opencode_mem.cli", "serve", "--background"],
+      cwd,
+      env: process.env,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+  }
+
+  const runCli = async (args) => {
+    const proc = Bun.spawn({
+      cmd: [pythonBin, "-m", "opencode_mem.cli", ...args],
+      cwd,
+      env: process.env,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [exitCode, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    return { exitCode, stdout, stderr }
+  }
+
+  const showStartupInfo = async () => {
+    if (startupShown) {
+      return
+    }
+    startupShown = true
+    const stats = await runCli(["stats"])
+    const recent = await runCli(["recent", "--limit", "3"])
+    const lines = [
+      "opencode-mem ready",
+      `viewer: http://${viewerHost}:${viewerPort}`,
+    ]
+    if (stats.exitCode === 0 && stats.stdout.trim()) {
+      lines.push("", "stats:", stats.stdout.trim())
+    }
+    if (recent.exitCode === 0 && recent.stdout.trim()) {
+      lines.push("", "recent:", recent.stdout.trim())
+    }
+    const message = lines.join("\n")
+    console.log(message)
+    await log("info", "opencode-mem startup info", {
+      message,
+      statsExitCode: stats.exitCode,
+      recentExitCode: recent.exitCode,
+      statsStderr: stats.stderr,
+      recentStderr: recent.stderr,
+    })
+  }
+
+  await log("info", "opencode-mem plugin initialized", { cwd })
+  await startViewer()
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
@@ -58,7 +142,7 @@ export const OpencodeMemPlugin = async ({ project, client, directory, worktree }
     }
     const input = JSON.stringify(payload)
     const proc = Bun.spawn({
-      cmd: ["python", "-m", "opencode_mem.plugin_ingest"],
+      cmd: [pythonBin, "-m", "opencode_mem.plugin_ingest"],
       cwd,
       env: process.env,
       stdin: new Blob([input]),
@@ -86,6 +170,7 @@ export const OpencodeMemPlugin = async ({ project, client, directory, worktree }
   return {
     "session.created": async () => {
       sessionStartedAt = new Date().toISOString()
+      await showStartupInfo()
     },
     "tool.execute.after": async (input, output) => {
       const args = output?.args ?? input?.args ?? {}
@@ -104,6 +189,9 @@ export const OpencodeMemPlugin = async ({ project, client, directory, worktree }
       await flushEvents()
     },
     "session.error": async () => {
+      await flushEvents()
+    },
+    "experimental.session.compacting": async () => {
       await flushEvents()
     },
   }
