@@ -46,7 +46,7 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 The ingest pipeline now classifies memories into categories (`prompt`, `discovery`, `change`, `decision`). The defaults are:
 
 - **OpenAI**: `gpt-5.1-codex-mini` (requires `OPENCODE_MEM_OBSERVATION_API_KEY`).
-- **Anthropic**: `claude-3-haiku` (set `OPENCODE_MEM_OBSERVATION_PROVIDER=anthropic` along with `OPENCODE_MEM_OBSERVATION_API_KEY`).
+- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVATION_PROVIDER=anthropic` along with `OPENCODE_MEM_OBSERVATION_API_KEY`).
 
 If no API key is provided, a faster keyword-based heuristic runs instead. Override the exact model with `OPENCODE_MEM_OBSERVATION_MODEL`.
 
