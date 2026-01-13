@@ -14,9 +14,13 @@ from .capture import (
     capture_post_context,
     capture_pre_context,
 )
+from .classifier import ObservationClassifier
 from . import db
 from .store import MemoryStore
 from .summarizer import Summarizer
+
+
+CLASSIFIER = ObservationClassifier()
 
 
 def _truncate_text(text: str, max_bytes: int) -> str:
@@ -116,6 +120,21 @@ def ingest(payload: dict[str, Any]) -> None:
             title="Entities",
             body_text="; ".join(summary.entities),
             confidence=0.4,
+        )
+    typed_memories = CLASSIFIER.classify(
+        transcript=transcript, summary=summary, events=events
+    )
+    for mem in typed_memories:
+        metadata: dict[str, Any] = {"source": "classifier"}
+        if mem.metadata:
+            metadata["detail"] = mem.metadata
+        store.remember(
+            session_id,
+            kind=mem.category,
+            title=mem.title,
+            body_text=mem.body,
+            confidence=mem.confidence,
+            metadata=metadata,
         )
     transcript_tokens = store.estimate_tokens(transcript)
     summary_tokens = store.estimate_tokens(summary.session_summary)
