@@ -16,7 +16,7 @@ class TypedMemory:
 
 
 DEFAULT_OPENAI_MODEL = os.getenv("OPENCODE_MEM_OBSERVATION_MODEL", "gpt-5.1-codex-mini")
-DEFAULT_ANTHROPIC_MODEL = "claude-3-haiku"
+DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
 
 
 class ObservationClassifier:
