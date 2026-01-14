@@ -13,6 +13,23 @@ from .xml_parser import ParsedOutput, parse_observer_output
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
+DEVAIGATEWAY_BASE_URL = "https://devaigateway.a.musta.ch/openai/v1"
+
+
+def _get_iap_token() -> Optional[str]:
+    """Get IAP token from gcloud for devaigateway auth."""
+    try:
+        result = subprocess.run(
+            ["gcloud", "auth", "print-identity-token"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 @dataclass
@@ -25,18 +42,24 @@ class ObserverClient:
     def __init__(self) -> None:
         cfg = load_config()
         provider = (cfg.observer_provider or "").lower()
+        model = cfg.observer_model or ""
+
+        # Auto-detect devaigateway from model name
+        if not provider and model.startswith("devaigateway/"):
+            provider = "devaigateway"
+
         if not provider:
             if os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
                 provider = "anthropic"
             else:
                 provider = "openai"
-        if provider not in {"openai", "anthropic"}:
+        if provider not in {"openai", "anthropic", "devaigateway"}:
             provider = "openai"
         self.provider = provider
         self.use_opencode_run = cfg.use_opencode_run
         self.opencode_model = cfg.opencode_model
         self.opencode_agent = cfg.opencode_agent
-        self.model = cfg.observer_model or (
+        self.model = model or (
             DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL
         )
         self.api_key = cfg.observer_api_key or os.getenv(
@@ -46,7 +69,25 @@ class ObserverClient:
         self.client: object | None = None
         if self.use_opencode_run:
             return
-        if provider == "anthropic":
+        if provider == "devaigateway":
+            # Use OpenAI client with devaigateway base URL and IAP token
+            iap_token = _get_iap_token()
+            if not iap_token:
+                return
+            try:
+                from openai import OpenAI  # type: ignore
+
+                self.client = OpenAI(
+                    api_key="unused",  # devaigateway uses IAP, not API key
+                    base_url=DEVAIGATEWAY_BASE_URL,
+                    default_headers={"Authorization": f"Bearer {iap_token}"},
+                )
+                # Strip devaigateway/ prefix from model name
+                if self.model.startswith("devaigateway/"):
+                    self.model = self.model[len("devaigateway/") :]
+            except Exception:  # pragma: no cover
+                self.client = None
+        elif provider == "anthropic":
             if not self.api_key:
                 self.api_key = os.getenv("ANTHROPIC_API_KEY")
             if not self.api_key:
@@ -95,6 +136,7 @@ class ObserverClient:
                     max_tokens_to_sample=800,
                 )
                 return resp.completion
+            # OpenAI and devaigateway both use OpenAI-compatible API
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
