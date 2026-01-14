@@ -21,6 +21,14 @@
 - Observations and summaries persist when the observer emits meaningful content.
 - Low-signal observations are filtered before writing.
 
+## Automatic context injection
+- The plugin can inject a memory pack into the system prompt.
+- Controls:
+  - `OPENCODE_MEM_INJECT_CONTEXT=0` disables injection.
+  - `OPENCODE_MEM_INJECT_LIMIT` caps memory items (default 8).
+  - `OPENCODE_MEM_INJECT_TOKEN_BUDGET` caps pack size (default 800).
+- Savings are tracked when a token budget is provided.
+
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.opencode-mem/plugin.log` for plugin errors.
