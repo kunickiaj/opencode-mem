@@ -114,6 +114,15 @@ class ObserverClient:
         if self.opencode_agent:
             cmd.extend(["--agent", self.opencode_agent])
         cmd.append(prompt)
+        env = dict(os.environ)
+        env.update(
+            {
+                "OPENCODE_MEM_PLUGIN_IGNORE": "1",
+                "OPENCODE_MEM_VIEWER": "0",
+                "OPENCODE_MEM_VIEWER_AUTO": "0",
+                "OPENCODE_MEM_VIEWER_AUTO_STOP": "0",
+            }
+        )
         try:
             result = subprocess.run(
                 cmd,
@@ -121,6 +130,7 @@ class ObserverClient:
                 capture_output=True,
                 text=True,
                 timeout=20,
+                env=env,
             )
         except Exception:  # pragma: no cover
             return None

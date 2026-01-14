@@ -81,6 +81,37 @@ def test_usage_stats(tmp_path: Path) -> None:
     assert usage["pack"]["tokens_read"] > 0
 
 
+def test_pack_tokens_saved_with_budget(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Shared body content one",
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Beta",
+        body_text="Shared body content two",
+    )
+    store.end_session(session)
+
+    store.build_memory_pack("Shared body", limit=5, token_budget=1)
+
+    stats = store.stats()
+    usage = {event["event"]: event for event in stats["usage"]["events"]}
+    assert usage["pack"]["tokens_saved"] > 0
+
+
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

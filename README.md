@@ -62,6 +62,7 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 2. Flushes captured events when the session idles, errors, or compacts (`session.compacting`, `session.compacted`, and `experimental.session.compacting`).
 3. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable).
 4. Posts payloads into `uvx opencode-mem ingest` by default.
+5. Injects a memory pack into the system prompt (disable with `OPENCODE_MEM_INJECT_CONTEXT=0`).
 
 ### Environment hints for the plugin
 
@@ -76,6 +77,10 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 | `OPENCODE_MEM_PLUGIN_LOG` | Path for the plugin log file (defaults to `~/.opencode-mem/plugin.log`, set `0` to disable). |
 | `OPENCODE_MEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `1500`). |
 | `OPENCODE_MEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
+| `OPENCODE_MEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process (used to avoid observer feedback loops). |
+| `OPENCODE_MEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
+| `OPENCODE_MEM_INJECT_LIMIT` | Max memory items in injected pack (default `8`). |
+| `OPENCODE_MEM_INJECT_TOKEN_BUDGET` | Approx token budget for injected pack (default `800`). |
 | `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
 | `OPENCODE_MEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
 | `OPENCODE_MEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |

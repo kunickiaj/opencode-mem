@@ -118,6 +118,11 @@ VIEWER_HTML = """<!doctype html>
         position: relative;
         z-index: 1;
         padding: 24px 28px 48px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .summary-row {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         gap: 20px;
@@ -128,10 +133,14 @@ VIEWER_HTML = """<!doctype html>
         border-radius: 20px;
         padding: 18px;
         box-shadow: var(--shadow);
-        min-height: 180px;
         transform: translateY(10px);
         opacity: 0;
         animation: liftIn 0.7s ease forwards;
+      }
+      .feed-section {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
       }
       section h2 {
         margin: 0 0 10px;
@@ -228,6 +237,50 @@ VIEWER_HTML = """<!doctype html>
       .section-meta .badge {
         background: rgba(31, 111, 92, 0.12);
         color: var(--accent);
+      }
+      .kind-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(31, 111, 92, 0.12);
+        color: var(--accent);
+        font-size: 11px;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+      }
+      .kind-pill.feature {
+        background: rgba(31, 111, 92, 0.16);
+        color: #1f6f5c;
+      }
+      .kind-pill.change {
+        background: rgba(34, 58, 94, 0.16);
+        color: #223a5e;
+      }
+      .kind-pill.bugfix {
+        background: rgba(230, 126, 77, 0.18);
+        color: #8d451f;
+      }
+      .kind-pill.refactor {
+        background: rgba(127, 89, 193, 0.18);
+        color: #5d3aa5;
+      }
+      .kind-pill.discovery {
+        background: rgba(120, 153, 235, 0.18);
+        color: #3b55a6;
+      }
+      .kind-pill.decision {
+        background: rgba(94, 129, 172, 0.18);
+        color: #3c516f;
+      }
+      .kind-pill.session_summary {
+        background: rgba(70, 150, 140, 0.18);
+        color: #2d5f58;
+      }
+      .kind-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       .settings-button {
         border: 1px solid rgba(31, 111, 92, 0.3);
@@ -341,13 +394,53 @@ VIEWER_HTML = """<!doctype html>
         overflow-wrap: anywhere;
         word-break: break-word;
       }
-      .truncate {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
+      .feed-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
       }
+      .feed-item {
+        border: 1px solid var(--border);
+        border-left: 6px solid rgba(31, 111, 92, 0.3);
+        border-radius: 16px;
+        padding: 14px 16px;
+        background: rgba(255, 255, 255, 0.7);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+      }
+      .feed-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(31, 111, 92, 0.4);
+        background: rgba(255, 255, 255, 0.9);
+      }
+      .feed-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .feed-title {
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .feed-meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .feed-body {
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+      .feed-item.feature { border-left-color: rgba(31, 111, 92, 0.6); }
+      .feed-item.change { border-left-color: rgba(34, 58, 94, 0.6); }
+      .feed-item.bugfix { border-left-color: rgba(230, 126, 77, 0.7); }
+      .feed-item.refactor { border-left-color: rgba(127, 89, 193, 0.6); }
+      .feed-item.discovery { border-left-color: rgba(120, 153, 235, 0.6); }
+      .feed-item.decision { border-left-color: rgba(94, 129, 172, 0.6); }
+      .feed-item.session_summary { border-left-color: rgba(70, 150, 140, 0.6); }
       section:hover {
         transform: translateY(0);
         box-shadow: 0 22px 50px rgba(18, 25, 33, 0.16);
@@ -369,6 +462,9 @@ VIEWER_HTML = """<!doctype html>
         main {
           padding: 18px 20px 40px;
           gap: 16px;
+        }
+        .summary-row {
+          grid-template-columns: 1fr;
         }
         .header-grid {
           grid-template-columns: 1fr;
@@ -435,38 +531,28 @@ VIEWER_HTML = """<!doctype html>
       </div>
     </div>
     <main>
-      <section>
-        <h2>Stats</h2>
-        <div class="grid-2" id="statsGrid"></div>
-      </section>
-      <section style="animation-delay: 0.05s;">
-        <h2>Recent Sessions</h2>
-        <ul id="sessionsList"></ul>
-      </section>
-      <section style="animation-delay: 0.1s;">
-        <h2>Session Summaries</h2>
-        <ul id="summariesList"></ul>
-      </section>
-      <section style="animation-delay: 0.15s;">
-        <h2>Observations</h2>
-        <div class="section-meta" id="observationsMeta">
-          <span>Loading observations…</span>
-        </div>
-        <ul id="observationsList"></ul>
-      </section>
-      <section style="animation-delay: 0.2s;">
-        <h2>Usage (token impact)</h2>
-        <ul id="usageList"></ul>
+      <div class="summary-row">
+        <section>
+          <h2>Stats</h2>
+          <div class="grid-2" id="statsGrid"></div>
+        </section>
+        <section>
+          <h2>Usage (token impact)</h2>
+          <ul id="usageList"></ul>
+        </section>
+      </div>
+      <section class="feed-section" style="animation-delay: 0.1s;">
+        <h2>Memory feed</h2>
+        <div class="section-meta" id="feedMeta">Loading memories…</div>
+        <div class="feed-list" id="feedList"></div>
       </section>
     </main>
     <script>
       const refreshStatus = document.getElementById("refreshStatus");
       const statsGrid = document.getElementById("statsGrid");
       const metaLine = document.getElementById("metaLine");
-      const sessionsList = document.getElementById("sessionsList");
-      const summariesList = document.getElementById("summariesList");
-      const observationsMeta = document.getElementById("observationsMeta");
-      const observationsList = document.getElementById("observationsList");
+      const feedList = document.getElementById("feedList");
+      const feedMeta = document.getElementById("feedMeta");
       const usageList = document.getElementById("usageList");
       const settingsButton = document.getElementById("settingsButton");
       const settingsBackdrop = document.getElementById("settingsBackdrop");
@@ -569,6 +655,37 @@ VIEWER_HTML = """<!doctype html>
           const wrapper = document.createElement("li");
           wrapper.appendChild(item);
           el.appendChild(wrapper);
+        });
+      }
+
+      function renderFeed(items) {
+        feedList.textContent = "";
+        if (!items.length) {
+          const empty = createElement("div", "small", "No memory items yet");
+          feedList.appendChild(empty);
+          return;
+        }
+        items.forEach(item => {
+          const kindValue = (item.kind || "session_summary").toLowerCase();
+          const feedItem = createElement("div", `feed-item ${kindValue}`);
+          const header = createElement("div", "feed-header");
+          const kindTag = createElement("span", `kind-pill ${kindValue}`, kindValue.replace(/_/g, " "));
+          const title = createElement("div", "feed-title", item.title || "Memory entry");
+          header.append(kindTag, title);
+          const metaParts = [];
+          if (item.session_id) {
+            metaParts.push(`session #${item.session_id}`);
+          }
+          if (item.id) {
+            metaParts.push(`memory #${item.id}`);
+          }
+          if (item.created_at) {
+            metaParts.push(formatDate(item.created_at));
+          }
+          const meta = createElement("div", "feed-meta", metaParts.join(" · "));
+          const body = createElement("div", "feed-body", item.body_text || "");
+          feedItem.append(header, meta, body);
+          feedList.appendChild(feedItem);
         });
       }
 
@@ -677,65 +794,24 @@ VIEWER_HTML = """<!doctype html>
       async function refresh() {
         refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
         try {
-          const [stats, sessions, summaries, observations, usage] = await Promise.all([
+          const [stats, summaries, observations, usage] = await Promise.all([
             fetch("/api/stats").then(r => r.json()),
-            fetch("/api/sessions?limit=8").then(r => r.json()),
-            fetch("/api/memory?kind=session_summary&limit=8").then(r => r.json()),
-            fetch("/api/observations?limit=10").then(r => r.json()),
+            fetch("/api/memory?kind=session_summary&limit=20").then(r => r.json()),
+            fetch("/api/observations?limit=40").then(r => r.json()),
             fetch("/api/usage").then(r => r.json()),
           ]);
           renderStats(stats);
-          renderList(sessionsList, sessions.items || [], item => {
-            const li = document.createElement("li");
-            const title = createElement("div", "title");
-            const strong = document.createElement("strong");
-            strong.textContent = `#${item.id}`;
-            title.append(strong);
-            if (item.cwd) {
-              title.append(document.createTextNode(` ${item.cwd}`));
-            }
-            const meta = createElement(
-              "div",
-              "small",
-              `started ${formatDate(item.started_at)} · user ${item.user || "n/a"}`
-            );
-            li.append(title, meta);
-            return li;
-          });
-          renderList(summariesList, summaries.items || [], item => {
-            const li = document.createElement("li");
-            const title = createElement("div", "title");
-            const strong = document.createElement("strong");
-            strong.textContent = item.title || "";
-            title.appendChild(strong);
-            const meta = createElement(
-              "div",
-              "small",
-              `session #${item.session_id ?? "n/a"} · memory #${item.id ?? "n/a"}`
-            );
-            const body = createElement("div", "small truncate", item.body_text || "");
-            li.append(title, meta, body);
-            return li;
-          });
+          const summaryItems = summaries.items || [];
           const observationItems = observations.items || [];
           const filteredObservations = observationItems.filter(item => !isLowSignalObservation(item));
           const filteredCount = observationItems.length - filteredObservations.length;
-          observationsMeta.textContent = `${filteredObservations.length} showing${filteredCount ? ` · ${filteredCount} filtered` : ""}`;
-          renderList(observationsList, filteredObservations, item => {
-            const li = document.createElement("li");
-            const title = createElement("div", "title");
-            const strong = document.createElement("strong");
-            strong.textContent = item.title || "";
-            title.appendChild(strong);
-            const meta = createElement(
-              "div",
-              "small",
-              `session #${item.session_id ?? "n/a"} · memory #${item.id ?? "n/a"}`
-            );
-            const body = createElement("div", "small truncate", item.body_text || "");
-            li.append(title, meta, body);
-            return li;
+          const feedItems = [...summaryItems, ...filteredObservations].sort((a, b) => {
+            const left = new Date(a.created_at || 0).getTime();
+            const right = new Date(b.created_at || 0).getTime();
+            return right - left;
           });
+          feedMeta.textContent = `${feedItems.length} items${filteredCount ? ` · ${filteredCount} observations filtered` : ""}`;
+          renderFeed(feedItems);
           renderList(usageList, usage.events || [], item => {
             const li = document.createElement("li");
             const title = createElement("div");
@@ -825,6 +901,38 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 ]
                 items = store.recent_by_kinds(limit=limit, kinds=kinds)
                 self._send_json({"items": items})
+                return
+            if parsed.path == "/api/pack":
+                params = parse_qs(parsed.query)
+                context = params.get("context", [""])[0]
+                if not context:
+                    self._send_json({"error": "context required"}, status=400)
+                    return
+                try:
+                    limit = int(params.get("limit", ["8"])[0])
+                except ValueError:
+                    self._send_json({"error": "limit must be int"}, status=400)
+                    return
+                token_budget = params.get("token_budget", [None])[0]
+                if token_budget in (None, ""):
+                    token_budget_value = None
+                else:
+                    try:
+                        token_budget_value = int(token_budget)
+                    except ValueError:
+                        self._send_json(
+                            {"error": "token_budget must be int"}, status=400
+                        )
+                        return
+                project = params.get("project", [None])[0]
+                filters = {"project": project} if project else None
+                pack = store.build_memory_pack(
+                    context=context,
+                    limit=limit,
+                    token_budget=token_budget_value,
+                    filters=filters,
+                )
+                self._send_json(pack)
                 return
             if parsed.path == "/api/memory":
                 params = parse_qs(parsed.query)
