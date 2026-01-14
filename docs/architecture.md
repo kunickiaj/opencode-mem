@@ -30,3 +30,7 @@
 - Implemented in `opencode_mem/viewer.py` as an embedded HTML page.
 - Serves JSON APIs for stats, sessions, memory items, and config.
 - Restart required to pick up HTML changes.
+
+## Context injection
+- The plugin injects a memory pack into the system prompt using OpenCode hook APIs.
+- Injection is per session and bounded by a configurable token budget.

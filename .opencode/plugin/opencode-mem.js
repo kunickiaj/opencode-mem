@@ -49,6 +49,12 @@ export const OpencodeMemPlugin = async ({
       // ignore logging failures
     }
   };
+  const pluginIgnored = ['1', 'true', 'yes'].includes(
+    (process.env.OPENCODE_MEM_PLUGIN_IGNORE || '').toLowerCase()
+  );
+  if (pluginIgnored) {
+    return {};
+  }
   const runner = process.env.OPENCODE_MEM_RUNNER || 'uvx';
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || cwd;
   const runnerArgs = runner === 'uvx' ? ['--from', runnerFrom, 'opencode-mem'] : [];
@@ -67,6 +73,19 @@ export const OpencodeMemPlugin = async ({
     process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || '1500',
     10
   );
+  const parseNumber = (value, fallback) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const injectEnabled = !['0', 'false', 'off'].includes(
+    (process.env.OPENCODE_MEM_INJECT_CONTEXT || '1').toLowerCase()
+  );
+  const injectLimit = parseNumber(process.env.OPENCODE_MEM_INJECT_LIMIT || '8', 8);
+  const injectTokenBudget = parseNumber(
+    process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET || '800',
+    800
+  );
+  const injectedSessions = new Map();
   let sessionStartedAt = null;
   let viewerStarted = false;
   let promptCounter = 0;
@@ -184,6 +203,50 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
+  const resolveInjectQuery = () => {
+    if (lastPromptText && lastPromptText.trim()) {
+      return lastPromptText.trim();
+    }
+    return 'recent work';
+  };
+
+  const buildPackArgs = (query) => {
+    const args = ['pack', query, '--limit', String(injectLimit)];
+    if (Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
+      args.push('--token-budget', String(injectTokenBudget));
+    }
+    const projectRoot = project?.root || project?.name;
+    if (projectRoot) {
+      args.push('--project', projectRoot);
+    }
+    return args;
+  };
+
+  const parsePackText = (stdout) => {
+    if (!stdout || !stdout.trim()) {
+      return '';
+    }
+    try {
+      const payload = JSON.parse(stdout);
+      return (payload?.pack_text || '').trim();
+    } catch (err) {
+      return '';
+    }
+  };
+
+  const buildInjectedContext = async (query) => {
+    const result = await runCli(buildPackArgs(query));
+    if (!result || result.exitCode !== 0) {
+      await logLine(`inject.pack.error ${result?.exitCode ?? 'unknown'}`);
+      return '';
+    }
+    const packText = parsePackText(result.stdout);
+    if (!packText) {
+      return '';
+    }
+    return `[opencode-mem context]\n${packText}`;
+  };
+
   const stopViewer = async () => {
     if (!viewerEnabled || !viewerAutoStop || !viewerStarted) {
       return;
@@ -277,6 +340,28 @@ export const OpencodeMemPlugin = async ({
   };
 
   return {
+    'experimental.chat.system.transform': async (input, output) => {
+      if (!injectEnabled) {
+        return;
+      }
+      const query = resolveInjectQuery();
+      const cached = injectedSessions.get(input.sessionID);
+      let contextText = cached?.text || '';
+      if (!contextText || cached?.query !== query) {
+        const injected = await buildInjectedContext(query);
+        if (injected) {
+          injectedSessions.set(input.sessionID, { query, text: injected });
+          contextText = injected;
+        }
+      }
+      if (!contextText) {
+        return;
+      }
+      if (!Array.isArray(output.system)) {
+        output.system = [];
+      }
+      output.system.push(contextText);
+    },
     event: async ({ event }) => {
       const eventType = event?.type || 'unknown';
       await logLine(`event ${eventType}`);
