@@ -65,6 +65,65 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem stats` / `opencode-mem recent` / `opencode-mem search` – inspect stored memories.
 - `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
+- `opencode-mem export-memories` / `opencode-mem import-memories` – export and import memories by project for sharing or backup.
+
+## Exporting and importing memories
+
+Share your project knowledge with teammates or back up memories to transfer between machines.
+
+### Export memories
+
+```bash
+# Export all memories for current project
+opencode-mem export-memories myproject.json
+
+# Export a specific project
+opencode-mem export-memories myproject.json --project /path/to/myproject
+
+# Export all projects
+opencode-mem export-memories all.json --all-projects
+
+# Export including deactivated memories
+opencode-mem export-memories myproject.json --project myproject --include-inactive
+
+# Export to stdout and compress
+opencode-mem export-memories - --project myproject | gzip > myproject.json.gz
+
+# Export memories from a specific date
+opencode-mem export-memories recent.json --project myproject --since 2025-01-01
+```
+
+### Import memories
+
+```bash
+# Preview what will be imported (dry run)
+opencode-mem import-memories myproject.json --dry-run
+
+# Import memories
+opencode-mem import-memories myproject.json
+
+# Import with project remapping (teammate has different paths)
+opencode-mem import-memories myproject.json --remap-project /Users/teammate/workspace/myproject
+
+# Import from compressed file
+gunzip -c myproject.json.gz | opencode-mem import-memories -
+```
+
+### Use case: sharing knowledge with teammates
+
+When a teammate joins your project:
+
+```bash
+# You: export your project memories
+opencode-mem export-memories project-knowledge.json --project myproject
+
+# Share the file (Slack, email, git, etc.)
+
+# Teammate: import into their opencode-mem
+opencode-mem import-memories project-knowledge.json --remap-project ~/workspace/myproject
+```
+
+Now their LLM has access to all your discoveries, patterns, and decisions about the codebase.
 
 ## Development
 
