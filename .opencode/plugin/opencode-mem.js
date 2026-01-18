@@ -24,16 +24,41 @@ export const OpencodeMemPlugin = async ({
   const debugExtraction = ["1", "true", "yes"].includes(
     (process.env.OPENCODE_MEM_DEBUG_EXTRACTION || "").toLowerCase()
   );
+  const logTimeoutMs = Number.parseInt(
+    process.env.OPENCODE_MEM_PLUGIN_LOG_TIMEOUT_MS || "1500",
+    10
+  );
   const log = async (level, message, extra = {}) => {
     if (!debug) {
       return;
     }
-    await client.app.log({
-      service: "opencode-mem",
-      level,
-      message,
-      extra,
-    });
+    try {
+      const logPromise = client.app.log({
+        service: "opencode-mem",
+        level,
+        message,
+        extra,
+      });
+      if (!Number.isFinite(logTimeoutMs) || logTimeoutMs <= 0) {
+        await logPromise;
+        return;
+      }
+      let timedOut = false;
+      await Promise.race([
+        logPromise,
+        new Promise((resolve) =>
+          setTimeout(() => {
+            timedOut = true;
+            resolve();
+          }, logTimeoutMs)
+        ),
+      ]);
+      if (timedOut) {
+        await logLine("debug log timed out");
+      }
+    } catch (err) {
+      // ignore debug logging failures
+    }
   };
   const logPathEnvRaw = process.env.OPENCODE_MEM_PLUGIN_LOG || "";
   const logPathEnv = logPathEnvRaw.toLowerCase();
