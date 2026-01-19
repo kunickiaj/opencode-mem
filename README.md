@@ -61,7 +61,6 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 ## CLI commands
 
 - `opencode-mem init-db` – initialize the database.
-- `opencode-mem run -- <cmd>` – run any command while automatically capturing transcripts and artifacts.
 - `opencode-mem stats` / `opencode-mem recent` / `opencode-mem search` – inspect stored memories.
 - `opencode-mem embed` – backfill semantic embeddings for existing memories.
 - `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
