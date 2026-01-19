@@ -1,5 +1,7 @@
 # opencode-mem
 
+[![CI](https://github.com/kunickiaj/opencode-mem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/opencode-mem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/opencode-mem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/opencode-mem) [![Release](https://img.shields.io/github/v/release/kunickiaj/opencode-mem)](https://github.com/kunickiaj/opencode-mem/releases)
+
 A lightweight persistent-memory companion for OpenCode. Captures terminal sessions (and tool calls) as memories, serves a viewer, and exposes an OpenCode plugin that records tool usage automatically.
 
 ## Prerequisites
