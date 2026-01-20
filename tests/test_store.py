@@ -385,3 +385,54 @@ def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:
     pack = store.build_memory_pack("alfa", limit=1, filters={"project": "/tmp/project-a"})
 
     assert pack["items"][0]["title"] == "Alpha memory"
+
+
+def test_pack_limit_is_per_project(tmp_path: Path) -> None:
+    """Ensure pack limit applies independently to each project."""
+    store = MemoryStore(tmp_path / "mem.sqlite")
+
+    # Create 60 memories in project-a
+    session_a = store.start_session(
+        cwd="/tmp/a",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    for i in range(60):
+        store.remember(session_a, kind="note", title=f"A-{i}", body_text=f"Project A memory {i}")
+    store.end_session(session_a)
+
+    # Create 60 memories in project-b
+    session_b = store.start_session(
+        cwd="/tmp/b",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-b",
+    )
+    for i in range(60):
+        store.remember(session_b, kind="note", title=f"B-{i}", body_text=f"Project B memory {i}")
+    store.end_session(session_b)
+
+    # Pack with limit=50 for project-a should get at most 50 from project-a
+    pack_a = store.build_memory_pack("memory", limit=50, filters={"project": "/tmp/project-a"})
+    a_items = pack_a["items"]
+    assert len(a_items) <= 50, f"Expected at most 50 items from project-a, got {len(a_items)}"
+    for item in a_items:
+        assert "Project A" in item["body"], f"Expected project-a memory, got: {item['body']}"
+
+    # Pack with limit=50 for project-b should get at most 50 from project-b
+    pack_b = store.build_memory_pack("memory", limit=50, filters={"project": "/tmp/project-b"})
+    b_items = pack_b["items"]
+    assert len(b_items) <= 50, f"Expected at most 50 items from project-b, got {len(b_items)}"
+    for item in b_items:
+        assert "Project B" in item["body"], f"Expected project-b memory, got: {item['body']}"
+
+    # Pack without project filter should get memories from both projects
+    pack_all = store.build_memory_pack("memory", limit=50)
+    all_items = pack_all["items"]
+    assert len(all_items) <= 50, f"Expected at most 50 items total, got {len(all_items)}"
+    assert len(all_items) > 0, "Expected some items in unfiltered pack"

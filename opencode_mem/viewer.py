@@ -978,15 +978,15 @@ VIEWER_HTML = """<!doctype html>
           return;
         }
         let items, workTokens, packTokens, savedTokens, semanticCandidates, semanticHits, timeAgo;
-        if (isAllProjects && recentPacks.length > 1) {
-          // Aggregate stats across recent packs
+        if (isAllProjects) {
+          // Aggregate stats across latest pack per project
           items = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).items || 0), 0);
           workTokens = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_tokens || 0), 0);
           packTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_read || 0), 0);
           savedTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_saved || 0), 0);
           semanticCandidates = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_candidates || 0), 0);
           semanticHits = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_hits || 0), 0);
-          timeAgo = `${recentPacks.length} recent packs`;
+          timeAgo = recentPacks.length === 1 ? "1 project" : `${recentPacks.length} projects`;
         } else {
           const latest = recentPacks[0];
           const metadata = latest.metadata_json || {};
@@ -1263,11 +1263,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/usage":
                 params = parse_qs(parsed.query)
                 project_filter = params.get("project", [None])[0]
+                if project_filter:
+                    # For specific project: get recent packs for that project
+                    recent_packs = store.recent_pack_events(limit=10, project=project_filter)
+                else:
+                    # For all projects: get latest pack per project (for aggregation)
+                    recent_packs = store.latest_pack_per_project()
                 self._send_json(
                     {
                         "events": store.usage_summary(),
                         "totals": store.stats()["usage"]["totals"],
-                        "recent_packs": store.recent_pack_events(limit=10, project=project_filter),
+                        "recent_packs": recent_packs,
                     }
                 )
                 return

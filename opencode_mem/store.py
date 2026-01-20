@@ -1811,6 +1811,29 @@ class MemoryStore:
             item["metadata_json"] = db.from_json(item.get("metadata_json"))
         return results
 
+    def latest_pack_per_project(self) -> list[dict[str, Any]]:
+        """Return the most recent pack event for each project."""
+        rows = self.conn.execute(
+            """
+            SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
+                   created_at, metadata_json
+            FROM usage_events
+            WHERE event = 'pack'
+              AND id IN (
+                  SELECT MAX(id)
+                  FROM usage_events
+                  WHERE event = 'pack'
+                    AND json_extract(metadata_json, '$.project') IS NOT NULL
+                  GROUP BY json_extract(metadata_json, '$.project')
+              )
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+        results = db.rows_to_dicts(rows)
+        for item in results:
+            item["metadata_json"] = db.from_json(item.get("metadata_json"))
+        return results
+
     def stats(self) -> dict[str, Any]:
         total_memories = self.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
         active_memories = self.conn.execute(
