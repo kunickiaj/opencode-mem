@@ -77,6 +77,22 @@ Notes:
 - Requires a Python SQLite build that supports extension loading (sqlite-vec).
 - If sqlite-vec cannot load, semantic recall is skipped and keyword search still works.
 
+### sqlite-vec on aarch64 (Linux)
+
+The PyPI wheels for sqlite-vec currently ship a 32-bit `vec0.so` on aarch64, which fails to load in 64-bit Python with `ELFCLASS32`. Use the aarch64 release build instead:
+
+```bash
+# Download the aarch64 loadable extension (0.1.7a2)
+curl -L -o /tmp/sqlite-vec-0.1.7a2-linux-aarch64.tar.gz \
+  https://github.com/asg017/sqlite-vec/releases/download/v0.1.7-alpha.2/sqlite-vec-0.1.7-alpha.2-loadable-linux-aarch64.tar.gz
+
+# Extract and replace the bundled vec0.so inside the venv
+tar -xzf /tmp/sqlite-vec-0.1.7a2-linux-aarch64.tar.gz -C /tmp
+cp /tmp/vec0.so .venv/lib/python*/site-packages/sqlite_vec/vec0.so
+```
+
+This keeps sqlite-vec installed but swaps in a 64-bit aarch64 loadable, unblocking vector search and imports on Debian 13 arm64.
+
 ## Exporting and importing memories
 
 Share your project knowledge with teammates or back up memories to transfer between machines.
@@ -169,7 +185,7 @@ uv run ruff format opencode_mem tests
 The project uses GitHub Actions for continuous integration and deployment:
 
 - **CI Pipeline** (`.github/workflows/ci.yml`): Runs on every push/PR to `main`
-  - Tests across Python 3.11-3.14
+  - Tests across Python 3.11-3.13
   - Linting with `ruff`
   - Code coverage reporting (via Codecov)
 
