@@ -702,13 +702,32 @@ VIEWER_HTML = """<!doctype html>
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
+      }
+      .feed-footer-left {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
       }
       .feed-tags {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
+      }
+      .feed-files {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 10px;
+        color: var(--muted);
+        opacity: 0.85;
+      }
+      [data-theme="dark"] .feed-files {
+        opacity: 0.7;
+      }
+      .feed-file {
+        white-space: nowrap;
       }
       .tag-chip {
         display: inline-flex;
@@ -992,6 +1011,30 @@ VIEWER_HTML = """<!doctype html>
         return el;
       }
 
+      function formatTagLabel(tag) {
+        if (!tag) return "";
+        const trimmed = tag.trim();
+        const colonIndex = trimmed.indexOf(":");
+        if (colonIndex === -1) return trimmed;
+        return trimmed.slice(0, colonIndex).trim();
+      }
+
+      function createTagChip(tag) {
+        const display = formatTagLabel(tag);
+        if (!display) return null;
+        const chip = createElement("span", "tag-chip", display);
+        chip.title = tag;
+        return chip;
+      }
+
+      function formatFileList(files, limit = 2) {
+        if (!files.length) return "";
+        const trimmed = files.map(file => file.trim()).filter(Boolean);
+        const slice = trimmed.slice(0, limit);
+        const suffix = trimmed.length > limit ? ` +${trimmed.length - limit}` : "";
+        return `${slice.join(", ")}${suffix}`.trim();
+      }
+
       function renderStats(stats) {
         const db = stats.database || {};
         const usage = stats.usage?.totals || {};
@@ -1221,19 +1264,42 @@ VIEWER_HTML = """<!doctype html>
           }
 
           const footer = createElement("div", "feed-footer");
+          const footerLeft = createElement("div", "feed-footer-left");
           const tagRow = createElement("div", "feed-tags");
+          const fileRow = createElement("div", "feed-files");
           const tags = (item.tags_text || "").split(/\\s+/).filter(Boolean);
           const concepts = parseJsonArray(metadata.concepts);
           const filesRead = parseJsonArray(metadata.files_read);
           const filesModified = parseJsonArray(metadata.files_modified);
-          const combinedTags = [...tags, ...concepts, ...filesRead, ...filesModified];
+          const combinedTags = [...tags, ...concepts];
           combinedTags.slice(0, 4).forEach(tag => {
-            tagRow.appendChild(createElement("span", "tag-chip", tag));
+            const chip = createTagChip(tag);
+            if (chip) tagRow.appendChild(chip);
           });
           if (combinedTags.length > 4) {
             tagRow.appendChild(createElement("span", "tag-chip", `+${combinedTags.length - 4}`));
           }
-          footer.append(tagRow, meta);
+          if (tagRow.childNodes.length) {
+            footerLeft.appendChild(tagRow);
+          }
+
+          if (filesModified.length) {
+            const summary = formatFileList(filesModified);
+            if (summary) {
+              fileRow.appendChild(createElement("span", "feed-file", `Modified: ${summary}`));
+            }
+          }
+          if (filesRead.length) {
+            const summary = formatFileList(filesRead);
+            if (summary) {
+              fileRow.appendChild(createElement("span", "feed-file", `Read: ${summary}`));
+            }
+          }
+          if (fileRow.childNodes.length) {
+            footerLeft.appendChild(fileRow);
+          }
+
+          footer.append(footerLeft, meta);
 
           feedItem.append(headerRow, body, footer);
           feedList.appendChild(feedItem);

@@ -968,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "opencode-mem"
-version = "0.3.4"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastembed" },
