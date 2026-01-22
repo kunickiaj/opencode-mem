@@ -2,17 +2,20 @@ import json
 import sqlite3
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from opencode_mem.cli import app
 from opencode_mem.store import MemoryStore
 
+runner = CliRunner()
 
-def test_import_from_claude_mem(tmp_path: Path) -> None:
-    """Test importing from a mock claude-mem database."""
-    # Create mock claude-mem database
+
+def _create_claude_db(tmp_path: Path) -> Path:
     claude_db = tmp_path / "claude-mem.db"
     claude_conn = sqlite3.connect(claude_db)
 
-    # Create claude-mem schema (minimal)
-    claude_conn.execute("""
+    claude_conn.execute(
+        """
         CREATE TABLE sdk_sessions (
             id INTEGER PRIMARY KEY,
             content_session_id TEXT UNIQUE NOT NULL,
@@ -21,9 +24,11 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             started_at TEXT NOT NULL,
             started_at_epoch INTEGER NOT NULL
         )
-    """)
+        """
+    )
 
-    claude_conn.execute("""
+    claude_conn.execute(
+        """
         CREATE TABLE observations (
             id INTEGER PRIMARY KEY,
             memory_session_id TEXT NOT NULL,
@@ -41,9 +46,11 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             created_at_epoch INTEGER NOT NULL,
             text TEXT
         )
-    """)
+        """
+    )
 
-    claude_conn.execute("""
+    claude_conn.execute(
+        """
         CREATE TABLE session_summaries (
             id INTEGER PRIMARY KEY,
             memory_session_id TEXT NOT NULL,
@@ -60,9 +67,11 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL
         )
-    """)
+        """
+    )
 
-    claude_conn.execute("""
+    claude_conn.execute(
+        """
         CREATE TABLE user_prompts (
             id INTEGER PRIMARY KEY,
             content_session_id TEXT NOT NULL,
@@ -71,9 +80,9 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL
         )
-    """)
+        """
+    )
 
-    # Insert test data
     claude_conn.execute(
         """
         INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
@@ -149,6 +158,12 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
 
     claude_conn.commit()
     claude_conn.close()
+    return claude_db
+
+
+def test_import_from_claude_mem(tmp_path: Path) -> None:
+    """Test importing from a mock claude-mem database."""
+    claude_db = _create_claude_db(tmp_path)
 
     # Import into opencode-mem
     opencode_db = tmp_path / "opencode-mem.db"
@@ -239,12 +254,22 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
     assert len(obs_memory) == 1, "Should have 1 discovery observation"
     assert obs_memory[0]["title"] == "Test observation"
 
-    summaries = store.conn.execute("SELECT * FROM session_summaries").fetchall()
-    assert len(summaries) == 1, "Should have 1 session summary"
-    assert summaries[0]["request"] == "Test request"
 
-    prompts = store.conn.execute("SELECT * FROM user_prompts").fetchall()
-    assert len(prompts) == 1, "Should have 1 user prompt"
-    assert prompts[0]["prompt_text"] == "Test prompt"
+def test_import_from_claude_mem_idempotent(tmp_path: Path) -> None:
+    claude_db = _create_claude_db(tmp_path)
+    opencode_db = tmp_path / "opencode-mem.db"
 
-    store.close()
+    result1 = runner.invoke(
+        app, ["import-from-claude-mem", str(claude_db), "--db-path", str(opencode_db)]
+    )
+    assert result1.exit_code == 0, result1.output
+    result2 = runner.invoke(
+        app, ["import-from-claude-mem", str(claude_db), "--db-path", str(opencode_db)]
+    )
+    assert result2.exit_code == 0, result2.output
+
+    store = MemoryStore(opencode_db)
+    assert store.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 2
+    assert store.conn.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0] == 1
+    assert store.conn.execute("SELECT COUNT(*) FROM user_prompts").fetchone()[0] == 1

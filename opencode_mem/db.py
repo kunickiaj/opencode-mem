@@ -72,7 +72,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             git_branch TEXT,
             user TEXT,
             tool_version TEXT,
-            metadata_json TEXT
+            metadata_json TEXT,
+            import_key TEXT
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -98,7 +99,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             active INTEGER DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            metadata_json TEXT
+            metadata_json TEXT,
+            import_key TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_memory_items_active_created ON memory_items(active, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id);
@@ -145,7 +147,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             prompt_number INTEGER,
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL,
-            metadata_json TEXT
+            metadata_json TEXT,
+            import_key TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
         CREATE INDEX IF NOT EXISTS idx_user_prompts_project ON user_prompts(project);
@@ -166,7 +169,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             prompt_number INTEGER,
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL,
-            metadata_json TEXT
+            metadata_json TEXT,
+            import_key TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);
         CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
@@ -174,6 +178,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_column(conn, "sessions", "project", "TEXT")
+    _ensure_column(conn, "sessions", "import_key", "TEXT")
     _ensure_column(conn, "memory_items", "subtitle", "TEXT")
     _ensure_column(conn, "memory_items", "facts", "TEXT")
     _ensure_column(conn, "memory_items", "narrative", "TEXT")
@@ -181,7 +186,20 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "files_read", "TEXT")
     _ensure_column(conn, "memory_items", "files_modified", "TEXT")
     _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
+    _ensure_column(conn, "memory_items", "import_key", "TEXT")
+    _ensure_column(conn, "user_prompts", "import_key", "TEXT")
+    _ensure_column(conn, "session_summaries", "import_key", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_import_key ON sessions(import_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_import_key ON memory_items(import_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_summaries_import_key ON session_summaries(import_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_prompts_import_key ON user_prompts(import_key)"
+    )
 
     _load_sqlite_vec(conn)
     conn.execute(
