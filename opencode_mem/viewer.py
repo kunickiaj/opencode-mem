@@ -578,6 +578,17 @@ VIEWER_HTML = """<!doctype html>
         font-weight: 600;
         font-size: 15px;
       }
+      .feed-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .feed-controls .section-meta {
+        margin: 0;
+      }
       .feed-project {
         color: var(--muted);
         font-size: 12px;
@@ -886,11 +897,18 @@ VIEWER_HTML = """<!doctype html>
           <div class="grid-2" id="sessionGrid"></div>
         </section>
       </div>
-      <section class="feed-section" style="animation-delay: 0.1s;">
-        <h2>Memory feed</h2>
-        <div class="section-meta" id="feedMeta">Loading memories…</div>
-        <div class="feed-list" id="feedList"></div>
-      </section>
+        <section class="feed-section" style="animation-delay: 0.1s;">
+          <h2>Memory feed</h2>
+          <div class="feed-controls">
+            <div class="section-meta" id="feedMeta">Loading memories…</div>
+            <div class="feed-toggle" id="feedTypeToggle">
+              <button class="toggle-button" data-filter="all">All</button>
+              <button class="toggle-button" data-filter="observations">Observations</button>
+              <button class="toggle-button" data-filter="summaries">Summaries</button>
+            </div>
+          </div>
+          <div class="feed-list" id="feedList"></div>
+        </section>
     </main>
     <script>
       const refreshStatus = document.getElementById("refreshStatus");
@@ -898,6 +916,7 @@ VIEWER_HTML = """<!doctype html>
       const metaLine = document.getElementById("metaLine");
       const feedList = document.getElementById("feedList");
       const feedMeta = document.getElementById("feedMeta");
+      const feedTypeToggle = document.getElementById("feedTypeToggle");
       const sessionGrid = document.getElementById("sessionGrid");
       const sessionMeta = document.getElementById("sessionMeta");
       const settingsButton = document.getElementById("settingsButton");
@@ -922,6 +941,9 @@ VIEWER_HTML = """<!doctype html>
       let configPath = "";
       let currentProject = "";
       const itemViewState = new Map();
+      const FEED_FILTER_KEY = "opencode-mem-feed-filter";
+      const FEED_FILTERS = ["all", "observations", "summaries"];
+      let feedTypeFilter = "all";
 
       // Theme management
       function getTheme() {
@@ -949,6 +971,15 @@ VIEWER_HTML = """<!doctype html>
       setTheme(getTheme());
       themeToggle?.addEventListener("click", toggleTheme);
 
+      feedTypeFilter = getFeedTypeFilter();
+      updateFeedTypeToggle();
+      feedTypeToggle?.addEventListener("click", event => {
+        const target = event.target.closest("button");
+        if (!target) return;
+        const value = target.dataset.filter || "all";
+        setFeedTypeFilter(value);
+      });
+
       function formatDate(value) {
         if (!value) return "n/a";
         const date = new Date(value);
@@ -971,6 +1002,43 @@ VIEWER_HTML = """<!doctype html>
           }
         }
         return [];
+      }
+
+      function getFeedTypeFilter() {
+        const saved = localStorage.getItem(FEED_FILTER_KEY) || "all";
+        return FEED_FILTERS.includes(saved) ? saved : "all";
+      }
+
+      function setFeedTypeFilter(value) {
+        feedTypeFilter = FEED_FILTERS.includes(value) ? value : "all";
+        localStorage.setItem(FEED_FILTER_KEY, feedTypeFilter);
+        updateFeedTypeToggle();
+        refresh();
+      }
+
+      function updateFeedTypeToggle() {
+        if (!feedTypeToggle) return;
+        const buttons = Array.from(feedTypeToggle.querySelectorAll(".toggle-button"));
+        buttons.forEach(button => {
+          const value = button.dataset.filter || "all";
+          button.classList.toggle("active", value === feedTypeFilter);
+        });
+      }
+
+      function filterFeedItems(items) {
+        if (feedTypeFilter === "observations") {
+          return items.filter(item => (item.kind || "").toLowerCase() !== "session_summary");
+        }
+        if (feedTypeFilter === "summaries") {
+          return items.filter(item => (item.kind || "").toLowerCase() === "session_summary");
+        }
+        return items;
+      }
+
+      function formatFeedFilterLabel() {
+        if (feedTypeFilter === "observations") return " · observations";
+        if (feedTypeFilter === "summaries") return " · session summaries";
+        return "";
       }
 
       function extractFactsFromBody(text) {
@@ -1572,8 +1640,10 @@ VIEWER_HTML = """<!doctype html>
             const right = new Date(b.created_at || 0).getTime();
             return right - left;
           });
-          feedMeta.textContent = `${feedItems.length} items${filteredCount ? " · " + filteredCount + " observations filtered" : ""}`;
-          renderFeed(feedItems);
+          const visibleItems = filterFeedItems(feedItems);
+          const filterLabel = formatFeedFilterLabel();
+          feedMeta.textContent = `${visibleItems.length} items${filterLabel}${filteredCount ? " · " + filteredCount + " observations filtered" : ""}`;
+          renderFeed(visibleItems);
           refreshStatus.innerHTML = "<span class='dot'></span>updated " + new Date().toLocaleTimeString();
         } catch (err) {
           refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
