@@ -74,6 +74,25 @@ def _compact_list(text: str, limit: int) -> str:
     return ", ".join(items)
 
 
+def _build_import_key(
+    source: str,
+    record_type: str,
+    original_id: str | int | None,
+    *,
+    project: str | None = None,
+    created_at: str | None = None,
+    source_db: str | None = None,
+) -> str:
+    parts = [source, record_type, str(original_id or "unknown")]
+    if project:
+        parts.append(project)
+    if created_at:
+        parts.append(created_at)
+    if source_db:
+        parts.append(source_db)
+    return "|".join(parts)
+
+
 def _viewer_pid_path() -> Path:
     pid_path = os.environ.get("OPENCODE_MEM_VIEWER_PID", "~/.opencode-mem-viewer.pid")
     return Path(os.path.expanduser(pid_path))
@@ -144,6 +163,53 @@ def _pid_for_port(port: int) -> int | None:
         except ValueError:
             continue
     return None
+
+
+def _strip_json_comments(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        result: list[str] = []
+        in_string = False
+        escape_next = False
+        i = 0
+        while i < len(line):
+            char = line[i]
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                i += 1
+                continue
+            if char == "\\" and in_string:
+                result.append(char)
+                escape_next = True
+                i += 1
+                continue
+            if char == '"':
+                in_string = not in_string
+                result.append(char)
+                i += 1
+                continue
+            if not in_string and char == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                break
+            result.append(char)
+            i += 1
+        lines.append("".join(result))
+    return "\n".join(lines)
+
+
+def _load_opencode_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = path.read_text()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_strip_json_comments(raw))
+
+
+def _write_opencode_config(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
 
 @app.command()
@@ -487,6 +553,41 @@ def import_from_claude_mem(
 
     # Get all unique projects to create sessions
     project_sessions = {}  # project -> session_id mapping
+    created_session_ids: list[int] = []
+    source_db = str(claude_db_path)
+
+    def get_project_session(project: str) -> int:
+        existing = project_sessions.get(project)
+        if existing:
+            return existing
+        import_key = _build_import_key(
+            "claude-mem",
+            "session",
+            project,
+            project=project,
+            source_db=source_db,
+        )
+        existing_id = store.find_imported_id("sessions", import_key)
+        if existing_id:
+            project_sessions[project] = existing_id
+            return existing_id
+        new_session_id = store.start_session(
+            cwd=os.getcwd(),
+            project=project,
+            git_remote=None,
+            git_branch=None,
+            user=getpass.getuser(),
+            tool_version="import-claude-mem",
+            metadata={
+                "source": "claude-mem",
+                "source_db": source_db,
+                "project_filter": project_filter,
+                "import_key": import_key,
+            },
+        )
+        project_sessions[project] = new_session_id
+        created_session_ids.append(new_session_id)
+        return new_session_id
 
     imported_obs = 0
     imported_summaries = 0
@@ -501,24 +602,20 @@ def import_from_claude_mem(
     """
     for row in claude_conn.execute(obs_query, params):
         project = row["project"]
-        if project not in project_sessions:
-            # Create a new session for this project
-            project_sessions[project] = store.start_session(
-                cwd=os.getcwd(),
-                project=project,
-                git_remote=None,
-                git_branch=None,
-                user=getpass.getuser(),
-                tool_version="import-claude-mem",
-                metadata={
-                    "source": "claude-mem",
-                    "source_db": str(claude_db_path),
-                    "project_filter": project_filter,
-                },
-            )
+        session_id = get_project_session(project)
+        import_key = _build_import_key(
+            "claude-mem",
+            "observation",
+            row["id"],
+            project=project,
+            created_at=row["created_at"],
+            source_db=source_db,
+        )
+        if store.find_imported_id("memory_items", import_key):
+            continue
 
         store.remember_observation(
-            project_sessions[project],
+            session_id,
             kind=row["type"],
             title=row["title"] or "Untitled",
             narrative=row["narrative"] or row["text"] or "",
@@ -532,8 +629,11 @@ def import_from_claude_mem(
             metadata={
                 "source": "claude-mem",
                 "original_session_id": row["memory_session_id"],
+                "original_observation_id": row["id"],
                 "created_at": row["created_at"],
                 "created_at_epoch": row["created_at_epoch"],
+                "source_db": source_db,
+                "import_key": import_key,
             },
         )
         imported_obs += 1
@@ -551,23 +651,20 @@ def import_from_claude_mem(
     """
     for row in claude_conn.execute(summaries_query, params):
         project = row["project"]
-        if project not in project_sessions:
-            project_sessions[project] = store.start_session(
-                cwd=os.getcwd(),
-                project=project,
-                git_remote=None,
-                git_branch=None,
-                user=getpass.getuser(),
-                tool_version="import-claude-mem",
-                metadata={
-                    "source": "claude-mem",
-                    "source_db": str(claude_db_path),
-                    "project_filter": project_filter,
-                },
-            )
+        session_id = get_project_session(project)
+        import_key = _build_import_key(
+            "claude-mem",
+            "summary",
+            row["id"],
+            project=project,
+            created_at=row["created_at"],
+            source_db=source_db,
+        )
+        if store.find_imported_id("session_summaries", import_key):
+            continue
 
         store.add_session_summary(
-            project_sessions[project],
+            session_id,
             project=row["project"],
             request=row["request"] or "",
             investigated=row["investigated"] or "",
@@ -581,8 +678,11 @@ def import_from_claude_mem(
             metadata={
                 "source": "claude-mem",
                 "original_session_id": row["memory_session_id"],
+                "original_summary_id": row["id"],
                 "created_at": row["created_at"],
                 "created_at_epoch": row["created_at_epoch"],
+                "source_db": source_db,
+                "import_key": import_key,
             },
         )
         # Also add as memory item for searchability
@@ -599,18 +699,30 @@ def import_from_claude_mem(
             )
         )
         if summary_text.strip():
-            store.remember(
-                project_sessions[project],
-                kind="session_summary",
-                title=row["request"][:80] if row["request"] else "Session summary",
-                body_text=summary_text,
-                confidence=0.7,
-                metadata={
-                    "source": "claude-mem",
-                    "original_session_id": row["memory_session_id"],
-                    "created_at": row["created_at"],
-                },
+            summary_memory_key = _build_import_key(
+                "claude-mem",
+                "summary-memory",
+                row["id"],
+                project=project,
+                created_at=row["created_at"],
+                source_db=source_db,
             )
+            if not store.find_imported_id("memory_items", summary_memory_key):
+                store.remember(
+                    session_id,
+                    kind="session_summary",
+                    title=row["request"][:80] if row["request"] else "Session summary",
+                    body_text=summary_text,
+                    confidence=0.7,
+                    metadata={
+                        "source": "claude-mem",
+                        "original_session_id": row["memory_session_id"],
+                        "original_summary_id": row["id"],
+                        "created_at": row["created_at"],
+                        "source_db": source_db,
+                        "import_key": summary_memory_key,
+                    },
+                )
         imported_summaries += 1
         if imported_summaries % 50 == 0:
             print(f"  Imported {imported_summaries}/{summaries_count} summaries...")
@@ -628,23 +740,18 @@ def import_from_claude_mem(
     """
     for row in claude_conn.execute(prompts_query, prompts_params):
         project = row["project"]
-        if project and project not in project_sessions:
-            project_sessions[project] = store.start_session(
-                cwd=os.getcwd(),
-                project=project,
-                git_remote=None,
-                git_branch=None,
-                user=getpass.getuser(),
-                tool_version="import-claude-mem",
-                metadata={
-                    "source": "claude-mem",
-                    "source_db": str(claude_db_path),
-                    "project_filter": project_filter,
-                },
-            )
-
-        session_id = project_sessions.get(project)
+        session_id = get_project_session(project) if project else None
         if session_id:
+            import_key = _build_import_key(
+                "claude-mem",
+                "prompt",
+                row["id"],
+                project=project,
+                created_at=row["created_at"],
+                source_db=source_db,
+            )
+            if store.find_imported_id("user_prompts", import_key):
+                continue
             store.add_user_prompt(
                 session_id,
                 project=row["project"],
@@ -653,8 +760,11 @@ def import_from_claude_mem(
                 metadata={
                     "source": "claude-mem",
                     "original_session_id": row["content_session_id"],
+                    "original_prompt_id": row["id"],
                     "created_at": row["created_at"],
                     "created_at_epoch": row["created_at_epoch"],
+                    "source_db": source_db,
+                    "import_key": import_key,
                 },
             )
         imported_prompts += 1
@@ -665,7 +775,7 @@ def import_from_claude_mem(
 
     # Close connections and end all sessions
     claude_conn.close()
-    for _project, session_id in project_sessions.items():
+    for session_id in created_session_ids:
         store.end_session(
             session_id,
             metadata={
@@ -951,11 +1061,24 @@ def import_memories(
     # Create session mapping: old session_id -> new session_id
     session_mapping = {}
     imported_sessions = 0
+    created_session_ids: list[int] = []
 
     print("\n[bold]Importing sessions...[/bold]")
     for sess_data in sessions_data:
         old_session_id = sess_data["id"]
         project = remap_project if remap_project else sess_data.get("project")
+
+        import_key = _build_import_key(
+            "export",
+            "session",
+            old_session_id,
+            project=project,
+            created_at=sess_data.get("started_at"),
+        )
+        existing_session_id = store.find_imported_id("sessions", import_key)
+        if existing_session_id:
+            session_mapping[old_session_id] = existing_session_id
+            continue
 
         new_session_id = store.start_session(
             cwd=sess_data.get("cwd", os.getcwd()),
@@ -970,10 +1093,12 @@ def import_memories(
                 "original_started_at": sess_data.get("started_at"),
                 "original_ended_at": sess_data.get("ended_at"),
                 "import_metadata": sess_data.get("metadata_json"),
+                "import_key": import_key,
             },
         )
         session_mapping[old_session_id] = new_session_id
         imported_sessions += 1
+        created_session_ids.append(new_session_id)
         if imported_sessions % 10 == 0:
             print(f"  Imported {imported_sessions}/{len(sessions_data)} sessions...")
 
@@ -986,6 +1111,15 @@ def import_memories(
         old_session_id = mem_data.get("session_id")
         new_session_id = session_mapping.get(old_session_id)
         if not new_session_id:
+            continue
+        import_key = _build_import_key(
+            "export",
+            "memory",
+            mem_data.get("id"),
+            project=remap_project or mem_data.get("project"),
+            created_at=mem_data.get("created_at"),
+        )
+        if store.find_imported_id("memory_items", import_key):
             continue
 
         if mem_data.get("narrative") or mem_data.get("facts") or mem_data.get("concepts"):
@@ -1006,6 +1140,7 @@ def import_memories(
                     "original_memory_id": mem_data.get("id"),
                     "original_created_at": mem_data.get("created_at"),
                     "import_metadata": mem_data.get("metadata_json"),
+                    "import_key": import_key,
                 },
             )
         else:
@@ -1021,6 +1156,7 @@ def import_memories(
                     "original_memory_id": mem_data.get("id"),
                     "original_created_at": mem_data.get("created_at"),
                     "import_metadata": mem_data.get("metadata_json"),
+                    "import_key": import_key,
                 },
             )
         imported_memories += 1
@@ -1039,6 +1175,15 @@ def import_memories(
             continue
 
         project = remap_project if remap_project else summ_data.get("project")
+        import_key = _build_import_key(
+            "export",
+            "summary",
+            summ_data.get("id"),
+            project=project,
+            created_at=summ_data.get("created_at"),
+        )
+        if store.find_imported_id("session_summaries", import_key):
+            continue
         store.add_session_summary(
             new_session_id,
             project=project,
@@ -1056,6 +1201,7 @@ def import_memories(
                 "original_summary_id": summ_data.get("id"),
                 "original_created_at": summ_data.get("created_at"),
                 "import_metadata": summ_data.get("metadata_json"),
+                "import_key": import_key,
             },
         )
         imported_summaries += 1
@@ -1074,6 +1220,15 @@ def import_memories(
             continue
 
         project = remap_project if remap_project else prompt_data.get("project")
+        import_key = _build_import_key(
+            "export",
+            "prompt",
+            prompt_data.get("id"),
+            project=project,
+            created_at=prompt_data.get("created_at"),
+        )
+        if store.find_imported_id("user_prompts", import_key):
+            continue
         store.add_user_prompt(
             new_session_id,
             project=project,
@@ -1084,6 +1239,7 @@ def import_memories(
                 "original_prompt_id": prompt_data.get("id"),
                 "original_created_at": prompt_data.get("created_at"),
                 "import_metadata": prompt_data.get("metadata_json"),
+                "import_key": import_key,
             },
         )
         imported_prompts += 1
@@ -1093,7 +1249,7 @@ def import_memories(
     print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
 
     # End all sessions
-    for new_session_id in session_mapping.values():
+    for new_session_id in created_session_ids:
         store.end_session(
             new_session_id,
             metadata={
@@ -1154,6 +1310,47 @@ def install_plugin(
     print("1. Restart OpenCode to load the plugin")
     print("2. The plugin will auto-detect installed mode and use SSH git URLs")
     print("3. View logs at: [dim]~/.opencode-mem/plugin.log[/dim]")
+
+
+@app.command()
+def install_mcp(
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing MCP config"),
+) -> None:
+    """Install the opencode-mem MCP entry into OpenCode's config."""
+    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    try:
+        config = _load_opencode_config(config_path)
+    except Exception as exc:
+        print(f"[red]Error: Failed to parse {config_path}: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if not isinstance(config, dict):
+        config = {}
+
+    mcp_config = config.get("mcp")
+    if not isinstance(mcp_config, dict):
+        mcp_config = {}
+
+    if "opencode_mem" in mcp_config and not force:
+        print(f"[yellow]MCP entry already exists in {config_path}[/yellow]")
+        print("[dim]Use --force to overwrite[/dim]")
+        return
+
+    mcp_config["opencode_mem"] = {
+        "type": "local",
+        "command": ["uvx", "opencode-mem", "mcp"],
+        "enabled": True,
+    }
+    config["mcp"] = mcp_config
+
+    try:
+        _write_opencode_config(config_path, config)
+    except Exception as exc:
+        print(f"[red]Error: Failed to write {config_path}: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    print(f"[green]✓ MCP entry installed in {config_path}[/green]")
+    print("Restart OpenCode to load the MCP tools.")
 
 
 def main() -> None:

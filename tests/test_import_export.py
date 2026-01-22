@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from opencode_mem.cli import app
 from opencode_mem.store import MemoryStore
+
+runner = CliRunner()
 
 
 def test_export_import_roundtrip(tmp_path: Path) -> None:
@@ -183,6 +188,96 @@ def test_export_import_roundtrip(tmp_path: Path) -> None:
     results = dest_store.search("testing", limit=5)
     assert len(results) == 1
     assert "testing" in results[0].body_text.lower()
+
+
+def test_import_is_idempotent(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.sqlite"
+    store = MemoryStore(source_db)
+
+    session = store.start_session(
+        cwd="/tmp/myproject",
+        project="/tmp/myproject",
+        git_remote="git@github.com:user/repo.git",
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+    )
+    store.remember(
+        session,
+        kind="observation",
+        title="Idempotent memory",
+        body_text="This should only import once",
+        confidence=0.8,
+    )
+    store.add_session_summary(
+        session,
+        project="/tmp/myproject",
+        request="Idempotent import",
+        investigated="Test export",
+        learned="Should dedupe",
+        completed="Created export",
+        next_steps="Re-import",
+        notes="",
+    )
+    store.add_user_prompt(
+        session,
+        project="/tmp/myproject",
+        prompt_text="Run idempotent import",
+        prompt_number=1,
+    )
+    store.end_session(session)
+
+    sessions_rows = store.conn.execute("SELECT * FROM sessions").fetchall()
+    sessions = [dict(row) for row in sessions_rows]
+    session_ids = [s["id"] for s in sessions]
+
+    memories_rows = store.conn.execute(
+        f"SELECT * FROM memory_items WHERE session_id IN ({','.join('?' * len(session_ids))}) AND active = 1",
+        session_ids,
+    ).fetchall()
+    memories = [dict(row) for row in memories_rows]
+
+    summaries_rows = store.conn.execute(
+        f"SELECT * FROM session_summaries WHERE session_id IN ({','.join('?' * len(session_ids))})",
+        session_ids,
+    ).fetchall()
+    summaries = [dict(row) for row in summaries_rows]
+
+    prompts_rows = store.conn.execute(
+        f"SELECT * FROM user_prompts WHERE session_id IN ({','.join('?' * len(session_ids))})",
+        session_ids,
+    ).fetchall()
+    prompts = [dict(row) for row in prompts_rows]
+
+    export_data = {
+        "version": "1.0",
+        "exported_at": "2025-01-15T10:00:00Z",
+        "export_metadata": {
+            "tool_version": "opencode-mem",
+            "projects": ["/tmp/myproject"],
+            "total_memories": len(memories),
+            "total_sessions": len(sessions),
+        },
+        "sessions": sessions,
+        "memory_items": memories,
+        "session_summaries": summaries,
+        "user_prompts": prompts,
+    }
+
+    export_path = tmp_path / "export.json"
+    export_path.write_text(json.dumps(export_data, ensure_ascii=False, indent=2))
+
+    dest_db = tmp_path / "dest.sqlite"
+    result1 = runner.invoke(app, ["import-memories", str(export_path), "--db-path", str(dest_db)])
+    assert result1.exit_code == 0, result1.output
+    result2 = runner.invoke(app, ["import-memories", str(export_path), "--db-path", str(dest_db)])
+    assert result2.exit_code == 0, result2.output
+
+    dest_store = MemoryStore(dest_db)
+    assert dest_store.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert dest_store.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 1
+    assert dest_store.conn.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0] == 1
+    assert dest_store.conn.execute("SELECT COUNT(*) FROM user_prompts").fetchone()[0] == 1
 
 
 def test_export_project_filter(tmp_path: Path) -> None:

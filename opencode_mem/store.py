@@ -106,10 +106,15 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         now = dt.datetime.now(dt.UTC).isoformat()
+        import_key = None
+        if metadata and metadata.get("import_key"):
+            import_key = metadata.get("import_key")
         cur = self.conn.execute(
             """
-            INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions(
+                started_at, cwd, project, git_remote, git_branch, user, tool_version, metadata_json, import_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now,
@@ -120,6 +125,7 @@ class MemoryStore:
                 user,
                 tool_version,
                 db.to_json(metadata),
+                import_key,
             ),
         )
         self.conn.commit()
@@ -136,6 +142,18 @@ class MemoryStore:
             (ended_at, metadata_text, session_id),
         )
         self.conn.commit()
+
+    def find_imported_id(self, table: str, import_key: str) -> int | None:
+        allowed_tables = {"sessions", "memory_items", "session_summaries", "user_prompts"}
+        if table not in allowed_tables:
+            raise ValueError(f"Unsupported table for import lookup: {table}")
+        row = self.conn.execute(
+            f"SELECT id FROM {table} WHERE import_key = ? LIMIT 1",
+            (import_key,),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row["id"])
 
     def add_artifact(
         self,
@@ -180,10 +198,25 @@ class MemoryStore:
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         tags_text = " ".join(sorted(set(tags or [])))
+        import_key = None
+        if metadata and metadata.get("import_key"):
+            import_key = metadata.get("import_key")
         cur = self.conn.execute(
             """
-            INSERT INTO memory_items(session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            INSERT INTO memory_items(
+                session_id,
+                kind,
+                title,
+                body_text,
+                confidence,
+                tags_text,
+                active,
+                created_at,
+                updated_at,
+                metadata_json,
+                import_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -195,6 +228,7 @@ class MemoryStore:
                 created_at,
                 created_at,
                 db.to_json(metadata),
+                import_key,
             ),
         )
         self.conn.commit()
@@ -238,6 +272,9 @@ class MemoryStore:
             if value is None:
                 continue
             metadata_payload[key] = value
+        import_key = None
+        if metadata_payload.get("import_key"):
+            import_key = metadata_payload.get("import_key")
         cur = self.conn.execute(
             """
             INSERT INTO memory_items(
@@ -257,9 +294,10 @@ class MemoryStore:
                 concepts,
                 files_read,
                 files_modified,
-                prompt_number
+                prompt_number,
+                import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -278,6 +316,7 @@ class MemoryStore:
                 db.to_json(files_read or []),
                 db.to_json(files_modified or []),
                 prompt_number,
+                import_key,
             ),
         )
         self.conn.commit()
@@ -402,10 +441,22 @@ class MemoryStore:
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
+        import_key = None
+        if metadata and metadata.get("import_key"):
+            import_key = metadata.get("import_key")
         cur = self.conn.execute(
             """
-            INSERT INTO user_prompts(session_id, project, prompt_text, prompt_number, created_at, created_at_epoch, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_prompts(
+                session_id,
+                project,
+                prompt_text,
+                prompt_number,
+                created_at,
+                created_at_epoch,
+                metadata_json,
+                import_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -415,6 +466,7 @@ class MemoryStore:
                 created_at,
                 created_at_epoch,
                 db.to_json(metadata),
+                import_key,
             ),
         )
         self.conn.commit()
@@ -440,6 +492,9 @@ class MemoryStore:
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
+        import_key = None
+        if metadata and metadata.get("import_key"):
+            import_key = metadata.get("import_key")
         cur = self.conn.execute(
             """
             INSERT INTO session_summaries(
@@ -456,9 +511,10 @@ class MemoryStore:
                 prompt_number,
                 created_at,
                 created_at_epoch,
-                metadata_json
+                metadata_json,
+                import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -475,6 +531,7 @@ class MemoryStore:
                 created_at,
                 created_at_epoch,
                 db.to_json(metadata),
+                import_key,
             ),
         )
         self.conn.commit()

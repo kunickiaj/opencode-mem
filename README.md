@@ -214,7 +214,13 @@ The viewer includes a Settings modal for the observer provider, model, and max c
 
 ## OpenCode MCP setup
 
-To let the LLM call memory tools (search/timeline/pack), add this to your global OpenCode config at `~/.config/opencode/opencode.json`:
+To let the LLM call memory tools (search/timeline/pack), run:
+
+```bash
+opencode-mem install-mcp
+```
+
+This writes/updates your global OpenCode config at `~/.config/opencode/opencode.json`. The MCP entry looks like:
 
 ```json
 {
