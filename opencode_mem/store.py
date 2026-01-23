@@ -2349,6 +2349,12 @@ class MemoryStore:
                 if item.get("id") in semantic_ids:
                     semantic_hits += 1
 
+        compression_ratio = None
+        overhead_tokens = None
+        if work_tokens > 0:
+            compression_ratio = float(pack_tokens) / float(work_tokens)
+            overhead_tokens = int(pack_tokens) - int(work_tokens)
+
         metrics = {
             "limit": limit,
             "items": len(formatted),
@@ -2358,6 +2364,8 @@ class MemoryStore:
             "work_tokens": work_tokens,
             "pack_tokens": pack_tokens,
             "tokens_saved": tokens_saved,
+            "compression_ratio": compression_ratio,
+            "overhead_tokens": overhead_tokens,
             "work_source": work_source_label,
             "work_usage_items": usage_items,
             "work_estimate_items": estimate_items,

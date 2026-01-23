@@ -48,6 +48,11 @@ def run_pack_benchmark(
 
     pack_tokens = [int(r.metrics.get("pack_tokens") or 0) for r in results]
     tokens_saved = [int(r.metrics.get("tokens_saved") or 0) for r in results]
+    ratios: list[float] = []
+    for r in results:
+        ratio = r.metrics.get("compression_ratio")
+        if isinstance(ratio, (int, float)):
+            ratios.append(float(ratio))
 
     def pct(values: list[int], p: float) -> int:
         if not values:
@@ -68,6 +73,11 @@ def run_pack_benchmark(
             "p90": pct(tokens_saved, 90),
             "max": max(tokens_saved) if tokens_saved else 0,
         },
+        "compression_ratio": {
+            "median": float(statistics.median(ratios)) if ratios else None,
+            "p90": float(sorted(ratios)[int(round(0.9 * (len(ratios) - 1)))]) if ratios else None,
+            "max": max(ratios) if ratios else None,
+        },
     }
     return {
         "summary": summary,
@@ -79,10 +89,12 @@ def format_benchmark_report(payload: dict) -> str:
     summary = payload.get("summary") or {}
     pt = summary.get("pack_tokens") or {}
     ts = summary.get("tokens_saved") or {}
+    cr = summary.get("compression_ratio") or {}
     lines = [
         f"queries: {summary.get('queries', 0)}",
         f"pack_tokens: median={pt.get('median', 0)} p90={pt.get('p90', 0)} max={pt.get('max', 0)}",
         f"tokens_saved: median={ts.get('median', 0)} p90={ts.get('p90', 0)} max={ts.get('max', 0)}",
+        f"compression_ratio: median={cr.get('median')} p90={cr.get('p90')} max={cr.get('max')}",
     ]
     return "\n".join(lines)
 
