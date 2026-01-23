@@ -199,6 +199,23 @@ def test_read_tool_output_is_compacted() -> None:
     assert len(tool_event.tool_output.splitlines()) <= 81
 
 
+def test_bash_tool_output_is_compacted() -> None:
+    huge = "\n".join([f"{i:04d}: line" for i in range(500)])
+    event = {
+        "type": "tool.execute.after",
+        "tool": "bash",
+        "args": {"command": "pytest"},
+        "result": huge,
+        "timestamp": "2026-01-14T19:00:03Z",
+    }
+    tool_event = _event_to_tool_event(event, max_chars=50000)
+    assert tool_event is not None
+    assert tool_event.tool_name == "bash"
+    assert isinstance(tool_event.tool_output, str)
+    assert "(+" in tool_event.tool_output
+    assert len(tool_event.tool_output.splitlines()) <= 81
+
+
 def test_tool_event_budget_dedupes_and_preserves_errors() -> None:
     events = [
         ToolEvent(
