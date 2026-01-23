@@ -571,6 +571,37 @@ def raw_events_retry(
         print(f"Retried batch {batch['id']} -> flushed {result['flushed']} events")
 
 
+@app.command("pack-benchmark")
+def pack_benchmark(
+    queries_path: Path = typer.Argument(..., exists=True, readable=True),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int = typer.Option(None, help="Max items per pack"),
+    token_budget: int = typer.Option(None, help="Approx token budget for each pack"),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
+    all_projects: bool = typer.Option(False, help="Search across all projects"),
+    json_out: Path | None = typer.Option(None, help="Write full benchmark JSON to file"),
+) -> None:
+    """Run pack generation for a query set and report token metrics."""
+
+    from .pack_benchmark import format_benchmark_report, read_queries, run_pack_benchmark, to_json
+
+    store = _store(db_path)
+    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
+    config = load_config()
+    filters = {"project": resolved_project} if resolved_project else None
+    queries = read_queries(queries_path.read_text())
+    result = run_pack_benchmark(
+        store,
+        queries=queries,
+        limit=limit or config.pack_observation_limit,
+        token_budget=token_budget,
+        filters=filters,
+    )
+    print(format_benchmark_report(result))
+    if json_out:
+        json_out.write_text(to_json(result) + "\n")
+
+
 @app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""
