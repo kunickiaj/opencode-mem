@@ -1951,6 +1951,7 @@ class MemoryStore:
         limit: int = 8,
         token_budget: int | None = None,
         filters: dict[str, Any] | None = None,
+        log_usage: bool = True,
     ) -> dict[str, Any]:
         fallback_used = False
         merge_results = False
@@ -2348,28 +2349,33 @@ class MemoryStore:
                 if item.get("id") in semantic_ids:
                     semantic_hits += 1
 
-        self.record_usage(
-            "pack",
-            tokens_read=pack_tokens,
-            tokens_saved=tokens_saved,
-            metadata={
-                "limit": limit,
-                "items": len(formatted),
-                "token_budget": token_budget,
-                "project": (filters or {}).get("project"),
-                "fallback": "recent" if fallback_used else None,
-                "work_tokens": work_tokens,
-                "work_source": work_source_label,
-                "work_usage_items": usage_items,
-                "work_estimate_items": estimate_items,
-                "semantic_candidates": semantic_candidates,
-                "semantic_hits": semantic_hits,
-            },
-        )
+        metrics = {
+            "limit": limit,
+            "items": len(formatted),
+            "token_budget": token_budget,
+            "project": (filters or {}).get("project"),
+            "fallback": "recent" if fallback_used else None,
+            "work_tokens": work_tokens,
+            "pack_tokens": pack_tokens,
+            "tokens_saved": tokens_saved,
+            "work_source": work_source_label,
+            "work_usage_items": usage_items,
+            "work_estimate_items": estimate_items,
+            "semantic_candidates": semantic_candidates,
+            "semantic_hits": semantic_hits,
+        }
+        if log_usage:
+            self.record_usage(
+                "pack",
+                tokens_read=pack_tokens,
+                tokens_saved=tokens_saved,
+                metadata=metrics,
+            )
         return {
             "context": context,
             "items": formatted,
             "pack_text": pack_text,
+            "metrics": metrics,
         }
 
     def all_sessions(self) -> list[dict[str, Any]]:
