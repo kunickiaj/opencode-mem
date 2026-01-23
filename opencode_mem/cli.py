@@ -765,7 +765,8 @@ def import_from_claude_mem(
 
         discovery_tokens = 0
         discovery_source = "claude-mem"
-        if "discovery_tokens" in row:
+        row_keys = set(row.keys())
+        if "discovery_tokens" in row_keys:
             discovery_tokens = int(row["discovery_tokens"] or 0)
         else:
             discovery_source = "claude-mem-missing"
@@ -832,7 +833,8 @@ def import_from_claude_mem(
 
         summary_discovery_tokens = 0
         summary_discovery_source = "claude-mem"
-        if "discovery_tokens" in row:
+        row_keys = set(row.keys())
+        if "discovery_tokens" in row_keys:
             summary_discovery_tokens = int(row["discovery_tokens"] or 0)
         else:
             summary_discovery_source = "claude-mem-missing"
@@ -893,21 +895,31 @@ def import_from_claude_mem(
                 created_at=row["created_at"],
                 source_db=source_db,
             )
-            if not store.find_imported_id("memory_items", summary_memory_key):
+            existing_summary_memory_id = store.find_imported_id("memory_items", summary_memory_key)
+            summary_memory_meta = {
+                "source": "claude-mem",
+                "original_session_id": row["memory_session_id"],
+                "original_summary_id": row["id"],
+                "created_at": row["created_at"],
+                "source_db": source_db,
+                "import_key": summary_memory_key,
+                "discovery_tokens": summary_discovery_tokens,
+                "discovery_source": summary_discovery_source,
+            }
+            if existing_summary_memory_id and update_existing:
+                store.conn.execute(
+                    "UPDATE memory_items SET metadata_json = ? WHERE id = ?",
+                    (db.to_json(summary_memory_meta), existing_summary_memory_id),
+                )
+                store.conn.commit()
+            elif not existing_summary_memory_id:
                 store.remember(
                     session_id,
                     kind="session_summary",
                     title=row["request"][:80] if row["request"] else "Session summary",
                     body_text=summary_text,
                     confidence=0.7,
-                    metadata={
-                        "source": "claude-mem",
-                        "original_session_id": row["memory_session_id"],
-                        "original_summary_id": row["id"],
-                        "created_at": row["created_at"],
-                        "source_db": source_db,
-                        "import_key": summary_memory_key,
-                    },
+                    metadata=summary_memory_meta,
                 )
         imported_summaries += 0 if existing_summary_id else 1
         if imported_summaries % 50 == 0:
