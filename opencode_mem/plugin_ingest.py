@@ -224,6 +224,96 @@ def _compact_read_output(text: str, *, max_lines: int = 80, max_chars: int = 200
     return compacted
 
 
+def _tool_event_signature(event: ToolEvent) -> str:
+    parts = [event.tool_name]
+    try:
+        parts.append(json.dumps(event.tool_input, sort_keys=True, ensure_ascii=False))
+    except Exception:
+        parts.append(str(event.tool_input))
+    if event.tool_error:
+        parts.append(str(event.tool_error)[:200])
+    if isinstance(event.tool_output, str) and event.tool_output:
+        parts.append(event.tool_output[:200])
+    return "|".join(parts)
+
+
+def _tool_event_importance(event: ToolEvent) -> int:
+    score = 0
+    if event.tool_error:
+        score += 100
+    tool = (event.tool_name or "").lower()
+    if tool in {"edit", "write"}:
+        score += 50
+    elif tool == "bash":
+        score += 30
+    elif tool == "read":
+        score += 20
+    else:
+        score += 10
+    return score
+
+
+def _budget_tool_events(
+    tool_events: list[ToolEvent],
+    *,
+    max_total_chars: int,
+    max_events: int,
+) -> list[ToolEvent]:
+    if not tool_events:
+        return []
+    if max_total_chars <= 0:
+        return []
+    if max_events <= 0:
+        return []
+
+    # De-dup identical tool events, keep first occurrence.
+    deduped: list[ToolEvent] = []
+    seen: set[str] = set()
+    for event in tool_events:
+        signature = _tool_event_signature(event)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(event)
+
+    if len(deduped) > max_events:
+        ranked = sorted(
+            enumerate(deduped),
+            key=lambda pair: (_tool_event_importance(pair[1]), -pair[0]),
+            reverse=True,
+        )
+        keep = {idx for idx, _ in ranked[:max_events]}
+        deduped = [event for idx, event in enumerate(deduped) if idx in keep]
+
+    def estimate_size(event: ToolEvent) -> int:
+        try:
+            return len(json.dumps(asdict(event), ensure_ascii=False))
+        except Exception:
+            return len(str(event))
+
+    if sum(estimate_size(e) for e in deduped) <= max_total_chars:
+        return deduped
+
+    ranked = sorted(
+        enumerate(deduped),
+        key=lambda pair: (_tool_event_importance(pair[1]), -pair[0]),
+        reverse=True,
+    )
+    kept: list[tuple[int, ToolEvent]] = []
+    total = 0
+    for idx, event in ranked:
+        size = estimate_size(event)
+        if total + size > max_total_chars and kept:
+            continue
+        kept.append((idx, event))
+        total += size
+        if total >= max_total_chars:
+            break
+
+    kept.sort(key=lambda pair: pair[0])
+    return [event for _, event in kept]
+
+
 def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
     if event.get("type") != "tool.execute.after":
         return None
@@ -418,6 +508,11 @@ def ingest(payload: dict[str, Any]) -> None:
         )
     max_chars = _get_config().summary_max_chars
     tool_events = _extract_tool_events(events, max_chars)
+
+    cfg = _get_config()
+    observer_budget = int(getattr(cfg, "observer_max_chars", 12000) or 12000)
+    tool_budget = max(2000, min(8000, observer_budget - 5000))
+    tool_events = _budget_tool_events(tool_events, max_total_chars=tool_budget, max_events=30)
     assistant_messages = _extract_assistant_messages(events)
     assistant_usage_events = _extract_assistant_usage(events)
     last_assistant_message = assistant_messages[-1] if assistant_messages else None
@@ -555,7 +650,7 @@ def ingest(payload: dict[str, Any]) -> None:
         per_item_tokens = max(1, discovery_tokens // total_items)
 
     for obs in observations_to_store:
-        metadata: dict[str, str | int] = {"source": "observer"}
+        metadata: dict[str, Any] = {"source": "observer"}
         if flush_batch:
             metadata["flush_batch"] = flush_batch
         if per_item_tokens:
