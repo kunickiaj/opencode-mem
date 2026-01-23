@@ -224,6 +224,10 @@ def _compact_read_output(text: str, *, max_lines: int = 80, max_chars: int = 200
     return compacted
 
 
+def _compact_bash_output(text: str, *, max_lines: int = 80, max_chars: int = 2000) -> str:
+    return _compact_read_output(text, max_lines=max_lines, max_chars=max_chars)
+
+
 def _tool_event_signature(event: ToolEvent) -> str:
     parts = [event.tool_name]
     try:
@@ -326,6 +330,8 @@ def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | N
     result = _sanitize_tool_output(tool, event.get("result"), max_chars)
     if tool == "read" and isinstance(result, str):
         result = _compact_read_output(result)
+    if tool == "bash" and isinstance(result, str):
+        result = _compact_bash_output(result)
     error = _sanitize_payload(event.get("error"), max_chars)
     return ToolEvent(
         tool_name=tool,
