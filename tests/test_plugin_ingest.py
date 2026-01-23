@@ -4,7 +4,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from opencode_mem.observer_prompts import ToolEvent
-from opencode_mem.plugin_ingest import _build_transcript, _event_to_tool_event, ingest
+from opencode_mem.plugin_ingest import (
+    _budget_tool_events,
+    _build_transcript,
+    _event_to_tool_event,
+    ingest,
+)
 
 
 def test_build_transcript_from_events() -> None:
@@ -192,3 +197,46 @@ def test_read_tool_output_is_compacted() -> None:
     assert isinstance(tool_event.tool_output, str)
     assert "(+" in tool_event.tool_output
     assert len(tool_event.tool_output.splitlines()) <= 81
+
+
+def test_tool_event_budget_dedupes_and_preserves_errors() -> None:
+    events = [
+        ToolEvent(
+            tool_name="bash",
+            tool_input={"command": "git status"},
+            tool_output="clean",
+            tool_error=None,
+            timestamp="2026-01-14T19:18:05.811Z",
+            cwd="/tmp",
+        ),
+        ToolEvent(
+            tool_name="bash",
+            tool_input={"command": "git status"},
+            tool_output="clean",
+            tool_error=None,
+            timestamp="2026-01-14T19:18:06.811Z",
+            cwd="/tmp",
+        ),
+        ToolEvent(
+            tool_name="read",
+            tool_input={"filePath": "/tmp/file.txt"},
+            tool_output="x" * 5000,
+            tool_error=None,
+            timestamp="2026-01-14T19:18:07.811Z",
+            cwd="/tmp",
+        ),
+        ToolEvent(
+            tool_name="bash",
+            tool_input={"command": "pytest"},
+            tool_output="",
+            tool_error="Traceback: boom",
+            timestamp="2026-01-14T19:18:08.811Z",
+            cwd="/tmp",
+        ),
+    ]
+    budgeted = _budget_tool_events(events, max_total_chars=800, max_events=3)
+    # dedupe
+    assert sum(1 for e in budgeted if e.tool_input == {"command": "git status"}) == 1
+    # error preserved
+    assert any(e.tool_error for e in budgeted)
+    assert len(budgeted) <= 3
