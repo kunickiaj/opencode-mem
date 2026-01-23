@@ -667,7 +667,7 @@ def import_from_claude_mem(
     prompts_params: list[str] = []
     if project_filter:
         prompts_where = """
-        WHERE content_session_id IN (
+        WHERE p.content_session_id IN (
             SELECT content_session_id FROM sdk_sessions WHERE project = ?
         )
         """
