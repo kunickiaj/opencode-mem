@@ -3,6 +3,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from opencode_mem import db
 from opencode_mem.cli import app
 from opencode_mem.store import MemoryStore
 
@@ -278,6 +279,104 @@ def test_import_is_idempotent(tmp_path: Path) -> None:
     assert dest_store.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 1
     assert dest_store.conn.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0] == 1
     assert dest_store.conn.execute("SELECT COUNT(*) FROM user_prompts").fetchone()[0] == 1
+
+
+def test_import_memories_flattens_summary_metadata(tmp_path: Path) -> None:
+    export_data = {
+        "version": "1.0",
+        "exported_at": "2025-01-15T10:00:00Z",
+        "export_metadata": {
+            "tool_version": "opencode-mem",
+            "projects": ["/tmp/project"],
+            "total_memories": 1,
+            "total_sessions": 1,
+        },
+        "sessions": [
+            {
+                "id": 1,
+                "started_at": "2025-01-15T09:00:00Z",
+                "cwd": "/tmp/project",
+                "project": "/tmp/project",
+                "git_remote": None,
+                "git_branch": "main",
+                "user": "tester",
+                "tool_version": "test",
+            }
+        ],
+        "memory_items": [
+            {
+                "id": 1,
+                "session_id": 1,
+                "kind": "session_summary",
+                "title": "Session summary",
+                "body_text": "## Request\nDo the thing",
+                "confidence": 0.7,
+                "active": 1,
+                "created_at": "2025-01-15T10:00:00Z",
+                "updated_at": "2025-01-15T10:00:00Z",
+                "metadata_json": {
+                    "request": "Do the thing",
+                    "investigated": "Checked the importer",
+                },
+            }
+        ],
+        "session_summaries": [],
+        "user_prompts": [],
+    }
+
+    export_path = tmp_path / "export.json"
+    export_path.write_text(json.dumps(export_data, ensure_ascii=False))
+
+    dest_db = tmp_path / "dest.sqlite"
+    result = runner.invoke(app, ["import-memories", str(export_path), "--db-path", str(dest_db)])
+    assert result.exit_code == 0, result.output
+
+    dest_store = MemoryStore(dest_db)
+    row = dest_store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE kind = 'session_summary'"
+    ).fetchone()
+    assert row is not None
+    metadata = db.from_json(row["metadata_json"])
+    assert metadata.get("request") == "Do the thing"
+    assert metadata.get("investigated") == "Checked the importer"
+
+
+def test_normalize_imported_metadata_updates_session_summary(tmp_path: Path) -> None:
+    db_path = tmp_path / "dest.sqlite"
+    store = MemoryStore(db_path)
+    session_id = store.start_session(
+        cwd="/tmp/project",
+        project="/tmp/project",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+    )
+    store.remember(
+        session_id,
+        kind="session_summary",
+        title="Session summary",
+        body_text="## Request\nDo the thing",
+        confidence=0.7,
+        metadata={
+            "source": "export",
+            "import_metadata": {"request": "Do the thing", "investigated": "Checked"},
+        },
+    )
+    store.end_session(session_id)
+    store.close()
+
+    result = runner.invoke(app, ["normalize-imported-metadata", "--db-path", str(db_path)])
+    assert result.exit_code == 0, result.output
+
+    updated_store = MemoryStore(db_path)
+    row = updated_store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE kind = 'session_summary'"
+    ).fetchone()
+    assert row is not None
+    metadata = db.from_json(row["metadata_json"])
+    assert metadata.get("request") == "Do the thing"
+    assert metadata.get("investigated") == "Checked"
 
 
 def test_export_project_filter(tmp_path: Path) -> None:

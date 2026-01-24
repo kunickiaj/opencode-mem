@@ -712,15 +712,25 @@ class MemoryStore:
         now = dt.datetime.now(dt.UTC).isoformat()
         cur = self.conn.execute(
             """
+            WITH candidates AS (
+                SELECT id
+                FROM raw_event_flush_batches
+                WHERE status IN ('started', 'running') AND updated_at < ?
+                ORDER BY updated_at
+                LIMIT ?
+            )
             UPDATE raw_event_flush_batches
             SET status = 'error', updated_at = ?
-            WHERE status IN ('started', 'running') AND updated_at < ?
-            LIMIT ?
+            WHERE id IN (SELECT id FROM candidates)
             """,
-            (now, older_than_iso, limit),
+            (older_than_iso, limit, now),
         )
         self.conn.commit()
-        return int(cur.rowcount or 0)
+        changes = cur.rowcount
+        if changes is None or changes < 0:
+            row = self.conn.execute("SELECT changes() AS count").fetchone()
+            changes = row["count"] if row else 0
+        return int(changes or 0)
 
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()

@@ -93,6 +93,49 @@ def _build_import_key(
     return "|".join(parts)
 
 
+SUMMARY_METADATA_KEYS = (
+    "request",
+    "investigated",
+    "learned",
+    "completed",
+    "next_steps",
+    "notes",
+    "files_read",
+    "files_modified",
+    "prompt_number",
+    "request_original",
+    "discovery_tokens",
+    "discovery_source",
+)
+
+
+def _coerce_import_metadata(import_metadata: Any) -> dict[str, Any] | None:
+    if import_metadata is None:
+        return None
+    if isinstance(import_metadata, dict):
+        return import_metadata
+    if isinstance(import_metadata, str):
+        try:
+            parsed = json.loads(import_metadata)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _merge_summary_metadata(metadata: dict[str, Any], import_metadata: Any) -> dict[str, Any]:
+    parsed_import_metadata = _coerce_import_metadata(import_metadata)
+    if not parsed_import_metadata:
+        return metadata
+    merged = dict(metadata)
+    for key in SUMMARY_METADATA_KEYS:
+        if key not in merged and key in parsed_import_metadata:
+            merged[key] = parsed_import_metadata[key]
+    merged["import_metadata"] = import_metadata
+    return merged
+
+
 def _viewer_pid_path() -> Path:
     pid_path = os.environ.get("OPENCODE_MEM_VIEWER_PID", "~/.opencode-mem-viewer.pid")
     return Path(os.path.expanduser(pid_path))
@@ -1323,6 +1366,18 @@ def import_memories(
         if store.find_imported_id("memory_items", import_key):
             continue
 
+        import_metadata = mem_data.get("metadata_json")
+        base_metadata = {
+            "source": "export",
+            "original_memory_id": mem_data.get("id"),
+            "original_created_at": mem_data.get("created_at"),
+            "import_metadata": import_metadata,
+            "import_key": import_key,
+        }
+        metadata = base_metadata
+        if mem_data.get("kind") == "session_summary":
+            metadata = _merge_summary_metadata(base_metadata, import_metadata)
+
         if mem_data.get("narrative") or mem_data.get("facts") or mem_data.get("concepts"):
             store.remember_observation(
                 new_session_id,
@@ -1336,13 +1391,7 @@ def import_memories(
                 files_modified=mem_data.get("files_modified"),
                 prompt_number=mem_data.get("prompt_number"),
                 confidence=mem_data.get("confidence", 0.5),
-                metadata={
-                    "source": "export",
-                    "original_memory_id": mem_data.get("id"),
-                    "original_created_at": mem_data.get("created_at"),
-                    "import_metadata": mem_data.get("metadata_json"),
-                    "import_key": import_key,
-                },
+                metadata=metadata,
             )
         else:
             store.remember(
@@ -1352,13 +1401,7 @@ def import_memories(
                 body_text=mem_data.get("body_text", ""),
                 confidence=mem_data.get("confidence", 0.5),
                 tags=mem_data.get("tags_text", "").split() if mem_data.get("tags_text") else None,
-                metadata={
-                    "source": "export",
-                    "original_memory_id": mem_data.get("id"),
-                    "original_created_at": mem_data.get("created_at"),
-                    "import_metadata": mem_data.get("metadata_json"),
-                    "import_key": import_key,
-                },
+                metadata=metadata,
             )
         imported_memories += 1
         if imported_memories % 100 == 0:
@@ -1449,22 +1492,36 @@ def import_memories(
 
     print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
 
-    # End all sessions
-    for new_session_id in created_session_ids:
-        store.end_session(
-            new_session_id,
-            metadata={
-                "imported_memories": imported_memories,
-                "imported_summaries": imported_summaries,
-                "imported_prompts": imported_prompts,
-            },
-        )
 
-    print("\n[bold green]✓ Import complete![/bold green]")
-    print(f"- Sessions: {imported_sessions}")
-    print(f"- Memories: {imported_memories}")
-    print(f"- Summaries: {imported_summaries}")
-    print(f"- Prompts: {imported_prompts}")
+@app.command()
+def normalize_imported_metadata(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    dry_run: bool = typer.Option(False, help="Preview changes without writing"),
+) -> None:
+    """Normalize imported session summary metadata for viewer rendering."""
+    store = _store(db_path)
+    rows = store.conn.execute(
+        "SELECT id, metadata_json FROM memory_items WHERE kind = 'session_summary'"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        metadata = db.from_json(row["metadata_json"])
+        import_metadata = metadata.get("import_metadata")
+        merged = _merge_summary_metadata(metadata, import_metadata)
+        if merged == metadata:
+            continue
+        updated += 1
+        if dry_run:
+            continue
+        store.conn.execute(
+            "UPDATE memory_items SET metadata_json = ? WHERE id = ?",
+            (db.to_json(merged), row["id"]),
+        )
+    if not dry_run:
+        store.conn.commit()
+    print(f"[green]✓ Updated {updated} session summaries[/green]")
+    if dry_run:
+        print("[yellow]Dry run - no data was updated[/yellow]")
 
 
 @app.command()
