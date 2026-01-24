@@ -1364,6 +1364,17 @@ VIEWER_HTML = """<!doctype html>
         return chip;
       }
 
+      function mergeMetadata(metadata) {
+        if (!metadata || typeof metadata !== "object") {
+          return {};
+        }
+        const importMetadata = metadata.import_metadata;
+        if (importMetadata && typeof importMetadata === "object") {
+          return { ...importMetadata, ...metadata };
+        }
+        return metadata;
+      }
+
       function formatFileList(files, limit = 2) {
         if (!files.length) return "";
         const trimmed = files.map(file => file.trim()).filter(Boolean);
@@ -1443,7 +1454,7 @@ VIEWER_HTML = """<!doctype html>
           const headerRow = createElement("div", "feed-card-header");
           const header = createElement("div", "feed-header");
           const kindTag = createElement("span", `kind-pill ${kindValue}`, kindValue.replace(/_/g, " "));
-          const metadata = item.metadata_json || {};
+          const metadata = mergeMetadata(item.metadata_json);
           const isSessionSummary = kindValue === "session_summary";
           const defaultTitle = item.title || "Memory entry";
           const displayTitle = isSessionSummary && metadata.request ? metadata.request : defaultTitle;
