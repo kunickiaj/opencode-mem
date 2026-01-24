@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .config import (
@@ -2183,6 +2184,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 inserted = 0
                 last_seen_ts_wall_ms = None
                 session_ids: set[str] = set()
+                batch: list[dict[str, Any]] = []
                 for item in items:
                     if not isinstance(item, dict):
                         self._send_json({"error": "event must be an object"}, status=400)
@@ -2224,29 +2226,59 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if not isinstance(event_payload, dict):
                         self._send_json({"error": "payload must be an object"}, status=400)
                         return
-                    if store.record_raw_event(
-                        opencode_session_id=opencode_session_id,
-                        event_id=event_id,
-                        event_type=event_type,
-                        payload=event_payload,
-                        ts_wall_ms=ts_wall_ms,
-                        ts_mono_ms=ts_mono_ms,
-                    ):
-                        inserted += 1
+                    batch.append(
+                        {
+                            "event_id": event_id,
+                            "event_type": event_type,
+                            "payload": event_payload,
+                            "ts_wall_ms": ts_wall_ms,
+                            "ts_mono_ms": ts_mono_ms,
+                        }
+                    )
 
                     if opencode_session_id:
                         session_ids.add(opencode_session_id)
 
                 if len(session_ids) == 1:
-                    opencode_session_id = next(iter(session_ids))
+                    single_session_id = next(iter(session_ids))
+                    result = store.record_raw_events_batch(
+                        opencode_session_id=single_session_id,
+                        events=batch,
+                    )
+                    inserted = int(result["inserted"])
+                else:
+                    # Fallback: handle multiple sessions individually.
+                    by_session: dict[str, list[dict[str, Any]]] = {}
+                    for item in items:
+                        sid = str(item.get("opencode_session_id") or "")
+                        if not sid or sid.startswith("msg_"):
+                            continue
+                        by_session.setdefault(sid, []).append(
+                            {
+                                "event_id": str(item.get("event_id") or ""),
+                                "event_type": str(item.get("event_type") or ""),
+                                "payload": item.get("payload") or {},
+                                "ts_wall_ms": item.get("ts_wall_ms"),
+                                "ts_mono_ms": item.get("ts_mono_ms"),
+                            }
+                        )
+                    for sid, sid_events in by_session.items():
+                        result = store.record_raw_events_batch(
+                            opencode_session_id=sid,
+                            events=sid_events,
+                        )
+                        inserted += int(result["inserted"])
+
+                if len(session_ids) == 1:
+                    meta_session_id = next(iter(session_ids))
                     store.update_raw_event_session_meta(
-                        opencode_session_id=opencode_session_id,
+                        opencode_session_id=meta_session_id,
                         cwd=cwd,
                         project=project,
                         started_at=started_at,
                         last_seen_ts_wall_ms=last_seen_ts_wall_ms,
                     )
-                    RAW_EVENT_FLUSHER.note_activity(opencode_session_id)
+                    RAW_EVENT_FLUSHER.note_activity(meta_session_id)
                 self._send_json({"inserted": inserted, "received": len(items)})
                 return
             finally:
