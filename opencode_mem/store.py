@@ -382,6 +382,90 @@ class MemoryStore:
         self.conn.commit()
         return True
 
+    def record_raw_events_batch(
+        self,
+        *,
+        opencode_session_id: str,
+        events: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        if not opencode_session_id.strip():
+            raise ValueError("opencode_session_id is required")
+        inserted = 0
+        skipped = 0
+        now = dt.datetime.now(dt.UTC).isoformat()
+        with self.conn:
+            existing = self.conn.execute(
+                "SELECT 1 FROM raw_event_sessions WHERE opencode_session_id = ?",
+                (opencode_session_id,),
+            ).fetchone()
+            if existing is None:
+                self.conn.execute(
+                    "INSERT INTO raw_event_sessions(opencode_session_id, updated_at) VALUES (?, ?)",
+                    (opencode_session_id, now),
+                )
+
+            for event in events:
+                event_id = str(event.get("event_id") or "")
+                event_type = str(event.get("event_type") or "")
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    payload = {}
+                ts_wall_ms = event.get("ts_wall_ms")
+                ts_mono_ms = event.get("ts_mono_ms")
+                if not event_id or not event_type:
+                    skipped += 1
+                    continue
+
+                cur = self.conn.execute(
+                    "SELECT 1 FROM raw_events WHERE opencode_session_id = ? AND event_id = ?",
+                    (opencode_session_id, event_id),
+                ).fetchone()
+                if cur is not None:
+                    skipped += 1
+                    continue
+
+                row = self.conn.execute(
+                    """
+                    UPDATE raw_event_sessions
+                    SET last_received_event_seq = last_received_event_seq + 1,
+                        updated_at = ?
+                    WHERE opencode_session_id = ?
+                    RETURNING last_received_event_seq
+                    """,
+                    (now, opencode_session_id),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Failed to allocate raw event seq")
+                event_seq = int(row["last_received_event_seq"])
+
+                self.conn.execute(
+                    """
+                    INSERT INTO raw_events(
+                        opencode_session_id,
+                        event_id,
+                        event_seq,
+                        event_type,
+                        ts_wall_ms,
+                        ts_mono_ms,
+                        payload_json,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        opencode_session_id,
+                        event_id,
+                        event_seq,
+                        event_type,
+                        ts_wall_ms,
+                        ts_mono_ms,
+                        db.to_json(payload),
+                        now,
+                    ),
+                )
+                inserted += 1
+        return {"inserted": inserted, "skipped": skipped}
+
     def raw_event_flush_state(self, opencode_session_id: str) -> int:
         row = self.conn.execute(
             "SELECT last_flushed_event_seq FROM raw_event_sessions WHERE opencode_session_id = ?",

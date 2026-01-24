@@ -701,6 +701,26 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     assert seqs == [0]
 
 
+def test_record_raw_events_batch_assigns_monotonic_seqs(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    result = store.record_raw_events_batch(
+        opencode_session_id="sess",
+        events=[
+            {"event_id": "a", "event_type": "t", "payload": {}},
+            {"event_id": "b", "event_type": "t", "payload": {}},
+        ],
+    )
+    assert result["inserted"] == 2
+    seqs = [
+        r[0]
+        for r in store.conn.execute(
+            "SELECT event_seq FROM raw_events WHERE opencode_session_id = ? ORDER BY event_seq",
+            ("sess",),
+        ).fetchall()
+    ]
+    assert seqs == [0, 1]
+
+
 def test_raw_event_flush_state_roundtrip(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     assert store.raw_event_flush_state("sess") == -1
