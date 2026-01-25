@@ -109,14 +109,20 @@ def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Pa
     )
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
 
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr(
+        "opencode_mem.cli.effective_status",
+        lambda host, port: type(
+            "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 1}
+        )(),
+    )
     called = {"restart": 0}
 
-    def fake_run_service(action: str, *, user: bool, system: bool) -> None:
+    def fake_run_service(action: str, *, user: bool, system: bool) -> bool:
         assert action == "restart"
         called["restart"] += 1
+        return True
 
-    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
+    monkeypatch.setattr("opencode_mem.cli._run_service_action_quiet", fake_run_service)
     result = runner.invoke(
         app,
         ["sync", "enable", "--db-path", str(db_path), "--host", "0.0.0.0", "--no-install"],
