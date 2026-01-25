@@ -869,6 +869,18 @@ def backfill_tags(
     print(f"Checked {result['checked']} memories")
 
 
+@app.command("backfill-discovery-tokens")
+def backfill_discovery_tokens(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit_sessions: int = typer.Option(50, help="Max sessions to backfill"),
+) -> None:
+    """Populate discovery_group/discovery_tokens for existing observer memories."""
+
+    store = _store(db_path)
+    updated = store.backfill_discovery_tokens(limit_sessions=limit_sessions)
+    print(f"Updated {updated} memories")
+
+
 @app.command("flush-raw-events")
 def flush_raw_events(
     opencode_session_id: str = typer.Argument(..., help="OpenCode session id"),
