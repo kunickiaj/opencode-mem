@@ -12,7 +12,8 @@ import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
+from uuid import uuid4
 
 from . import db
 from .semantic import chunk_text, embed_texts, get_embedding_client, hash_text
@@ -32,6 +33,23 @@ class MemoryResult:
     score: float
     session_id: int
     metadata: dict[str, Any]
+
+
+class ReplicationClock(TypedDict):
+    rev: int
+    updated_at: str
+    device_id: str
+
+
+class ReplicationOp(TypedDict):
+    op_id: str
+    entity_type: str
+    entity_id: str
+    op_type: str
+    payload: dict[str, Any] | None
+    clock: ReplicationClock
+    device_id: str
+    created_at: str
 
 
 class MemoryStore:
@@ -184,6 +202,474 @@ class MemoryStore:
         self.db_path = Path(db_path).expanduser()
         self.conn = db.connect(self.db_path, check_same_thread=check_same_thread)
         db.initialize_schema(self.conn)
+        self.device_id = os.getenv("OPENCODE_MEM_DEVICE_ID", "local")
+
+    @staticmethod
+    def _now_iso() -> str:
+        return dt.datetime.now(dt.UTC).isoformat()
+
+    @staticmethod
+    def compute_cursor(created_at: str, op_id: str) -> str:
+        return f"{created_at}|{op_id}"
+
+    @staticmethod
+    def _parse_cursor(cursor: str | None) -> tuple[str, str] | None:
+        if not cursor:
+            return None
+        if "|" not in cursor:
+            return None
+        created_at, op_id = cursor.split("|", 1)
+        if not created_at or not op_id:
+            return None
+        return created_at, op_id
+
+    @staticmethod
+    def _normalize_metadata(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            return db.from_json(value)
+        return {}
+
+    @staticmethod
+    def _clock_tuple(
+        rev: int | None, updated_at: str | None, device_id: str | None
+    ) -> tuple[int, str, str]:
+        return (int(rev or 0), str(updated_at or ""), str(device_id or ""))
+
+    @staticmethod
+    def _is_newer_clock(candidate: tuple[int, str, str], existing: tuple[int, str, str]) -> bool:
+        return candidate > existing
+
+    def _memory_item_clock(self, row: dict[str, Any]) -> tuple[int, str, str]:
+        metadata = self._normalize_metadata(row.get("metadata_json"))
+        device_id = str(metadata.get("clock_device_id") or "")
+        return self._clock_tuple(row.get("rev"), row.get("updated_at"), device_id)
+
+    def _memory_item_payload(self, row: dict[str, Any]) -> dict[str, Any]:
+        metadata = self._normalize_metadata(row.get("metadata_json"))
+        return {
+            "session_id": row.get("session_id"),
+            "kind": row.get("kind"),
+            "title": row.get("title"),
+            "body_text": row.get("body_text"),
+            "confidence": row.get("confidence"),
+            "tags_text": row.get("tags_text"),
+            "active": row.get("active"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "metadata_json": metadata,
+            "subtitle": row.get("subtitle"),
+            "facts": row.get("facts"),
+            "narrative": row.get("narrative"),
+            "concepts": row.get("concepts"),
+            "files_read": row.get("files_read"),
+            "files_modified": row.get("files_modified"),
+            "prompt_number": row.get("prompt_number"),
+            "import_key": row.get("import_key"),
+            "deleted_at": row.get("deleted_at"),
+            "rev": row.get("rev"),
+        }
+
+    def _clock_from_payload(self, payload: dict[str, Any]) -> ReplicationClock:
+        metadata = self._normalize_metadata(payload.get("metadata_json"))
+        device_id = str(metadata.get("clock_device_id") or self.device_id)
+        return {
+            "rev": int(payload.get("rev") or 0),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "device_id": device_id,
+        }
+
+    def _record_memory_item_op(self, memory_id: int, op_type: str) -> None:
+        row = self.conn.execute(
+            "SELECT * FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            return
+        payload = self._memory_item_payload(dict(row))
+        clock = self._clock_from_payload(payload)
+        entity_id = str(payload.get("import_key") or memory_id)
+        self.record_replication_op(
+            op_id=str(uuid4()),
+            entity_type="memory_item",
+            entity_id=entity_id,
+            op_type=op_type,
+            payload=payload,
+            clock=clock,
+            device_id=clock["device_id"],
+            created_at=self._now_iso(),
+        )
+
+    def _ensure_session_for_replication(self, session_id: int, started_at: str | None) -> None:
+        row = self.conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is not None:
+            return
+        created_at = started_at or self._now_iso()
+        self.conn.execute(
+            "INSERT INTO sessions(id, started_at) VALUES (?, ?)",
+            (session_id, created_at),
+        )
+
+    def _replication_op_exists(self, op_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM replication_ops WHERE op_id = ?",
+            (op_id,),
+        ).fetchone()
+        return row is not None
+
+    def record_replication_op(
+        self,
+        *,
+        op_id: str,
+        entity_type: str,
+        entity_id: str,
+        op_type: str,
+        payload: dict[str, Any] | None,
+        clock: ReplicationClock,
+        device_id: str,
+        created_at: str,
+    ) -> None:
+        payload_json = None if payload is None else db.to_json(payload)
+        self.conn.execute(
+            """
+            INSERT INTO replication_ops(
+                op_id,
+                entity_type,
+                entity_id,
+                op_type,
+                payload_json,
+                clock_rev,
+                clock_updated_at,
+                clock_device_id,
+                device_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                op_id,
+                entity_type,
+                entity_id,
+                op_type,
+                payload_json,
+                int(clock.get("rev") or 0),
+                str(clock.get("updated_at") or ""),
+                str(clock.get("device_id") or ""),
+                device_id,
+                created_at,
+            ),
+        )
+        self.conn.commit()
+
+    def load_replication_ops_since(
+        self, cursor: str | None, limit: int = 100
+    ) -> tuple[list[ReplicationOp], str | None]:
+        parsed = self._parse_cursor(cursor)
+        params: list[Any] = []
+        where_clause = ""
+        if parsed:
+            created_at, op_id = parsed
+            where_clause = "WHERE created_at > ? OR (created_at = ? AND op_id > ?)"
+            params.extend([created_at, created_at, op_id])
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM replication_ops
+            {where_clause}
+            ORDER BY created_at ASC, op_id ASC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+        ops: list[ReplicationOp] = []
+        for row in rows:
+            payload = db.from_json(row["payload_json"]) if row["payload_json"] else None
+            ops.append(
+                {
+                    "op_id": str(row["op_id"]),
+                    "entity_type": str(row["entity_type"]),
+                    "entity_id": str(row["entity_id"]),
+                    "op_type": str(row["op_type"]),
+                    "payload": payload,
+                    "clock": {
+                        "rev": int(row["clock_rev"]),
+                        "updated_at": str(row["clock_updated_at"]),
+                        "device_id": str(row["clock_device_id"]),
+                    },
+                    "device_id": str(row["device_id"]),
+                    "created_at": str(row["created_at"]),
+                }
+            )
+        next_cursor = None
+        if rows:
+            last = rows[-1]
+            next_cursor = self.compute_cursor(str(last["created_at"]), str(last["op_id"]))
+        return ops, next_cursor
+
+    def apply_replication_ops(self, ops: list[ReplicationOp]) -> dict[str, int]:
+        inserted = 0
+        updated = 0
+        skipped = 0
+        with self.conn:
+            for op in ops:
+                op_id = str(op.get("op_id") or "")
+                if not op_id or self._replication_op_exists(op_id):
+                    skipped += 1
+                    continue
+                payload = op.get("payload")
+                clock = cast(ReplicationClock, op.get("clock") or {})
+                self.conn.execute(
+                    """
+                    INSERT INTO replication_ops(
+                        op_id,
+                        entity_type,
+                        entity_id,
+                        op_type,
+                        payload_json,
+                        clock_rev,
+                        clock_updated_at,
+                        clock_device_id,
+                        device_id,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        op_id,
+                        str(op.get("entity_type") or ""),
+                        str(op.get("entity_id") or ""),
+                        str(op.get("op_type") or ""),
+                        None if payload is None else db.to_json(payload),
+                        int(clock.get("rev") or 0),
+                        str(clock.get("updated_at") or ""),
+                        str(clock.get("device_id") or ""),
+                        str(op.get("device_id") or ""),
+                        str(op.get("created_at") or ""),
+                    ),
+                )
+
+                if op.get("entity_type") != "memory_item":
+                    skipped += 1
+                    continue
+                op_type = str(op.get("op_type") or "")
+                if op_type == "upsert":
+                    action = self._apply_memory_item_upsert(op)
+                elif op_type == "delete":
+                    action = self._apply_memory_item_delete(op)
+                else:
+                    skipped += 1
+                    continue
+                if action == "inserted":
+                    inserted += 1
+                elif action == "updated":
+                    updated += 1
+                else:
+                    skipped += 1
+        return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+    def _apply_memory_item_upsert(self, op: ReplicationOp) -> str:
+        payload = op.get("payload") or {}
+        entity_id = str(op.get("entity_id") or "")
+        import_key = str(payload.get("import_key") or entity_id)
+        session_id = payload.get("session_id")
+        if not import_key or session_id is None:
+            return "skipped"
+        row = self.conn.execute(
+            "SELECT * FROM memory_items WHERE import_key = ?",
+            (import_key,),
+        ).fetchone()
+        clock = cast(ReplicationClock, op.get("clock") or {})
+        op_clock = self._clock_tuple(
+            clock.get("rev"), clock.get("updated_at"), clock.get("device_id")
+        )
+        if row is not None:
+            existing = dict(row)
+            if not self._is_newer_clock(op_clock, self._memory_item_clock(existing)):
+                return "skipped"
+        metadata = self._normalize_metadata(payload.get("metadata_json"))
+        metadata["clock_device_id"] = str(clock.get("device_id") or "")
+        metadata_json = db.to_json(metadata)
+        created_at = str(payload.get("created_at") or clock.get("updated_at") or "")
+        updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
+        self._ensure_session_for_replication(int(session_id), created_at)
+        values = (
+            int(session_id),
+            str(payload.get("kind") or ""),
+            str(payload.get("title") or ""),
+            str(payload.get("body_text") or ""),
+            float(payload.get("confidence") or 0.5),
+            str(payload.get("tags_text") or ""),
+            int(payload.get("active") or 1),
+            created_at,
+            updated_at,
+            metadata_json,
+            payload.get("subtitle"),
+            payload.get("facts"),
+            payload.get("narrative"),
+            payload.get("concepts"),
+            payload.get("files_read"),
+            payload.get("files_modified"),
+            payload.get("prompt_number"),
+            import_key,
+            payload.get("deleted_at"),
+            int(clock.get("rev") or payload.get("rev") or 0),
+        )
+        if row is None:
+            self.conn.execute(
+                """
+                INSERT INTO memory_items(
+                    session_id,
+                    kind,
+                    title,
+                    body_text,
+                    confidence,
+                    tags_text,
+                    active,
+                    created_at,
+                    updated_at,
+                    metadata_json,
+                    subtitle,
+                    facts,
+                    narrative,
+                    concepts,
+                    files_read,
+                    files_modified,
+                    prompt_number,
+                    import_key,
+                    deleted_at,
+                    rev
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return "inserted"
+        self.conn.execute(
+            """
+            UPDATE memory_items
+            SET session_id = ?,
+                kind = ?,
+                title = ?,
+                body_text = ?,
+                confidence = ?,
+                tags_text = ?,
+                active = ?,
+                created_at = ?,
+                updated_at = ?,
+                metadata_json = ?,
+                subtitle = ?,
+                facts = ?,
+                narrative = ?,
+                concepts = ?,
+                files_read = ?,
+                files_modified = ?,
+                prompt_number = ?,
+                import_key = ?,
+                deleted_at = ?,
+                rev = ?
+            WHERE import_key = ?
+            """,
+            (*values, import_key),
+        )
+        return "updated"
+
+    def _apply_memory_item_delete(self, op: ReplicationOp) -> str:
+        payload = op.get("payload") or {}
+        entity_id = str(op.get("entity_id") or "")
+        import_key = str(payload.get("import_key") or entity_id)
+        if not import_key:
+            return "skipped"
+        row = self.conn.execute(
+            "SELECT * FROM memory_items WHERE import_key = ?",
+            (import_key,),
+        ).fetchone()
+        clock = cast(ReplicationClock, op.get("clock") or {})
+        op_clock = self._clock_tuple(
+            clock.get("rev"), clock.get("updated_at"), clock.get("device_id")
+        )
+        if row is not None:
+            existing = dict(row)
+            if not self._is_newer_clock(op_clock, self._memory_item_clock(existing)):
+                return "skipped"
+        metadata = self._normalize_metadata(payload.get("metadata_json"))
+        metadata["clock_device_id"] = str(clock.get("device_id") or "")
+        metadata_json = db.to_json(metadata)
+        deleted_at = str(clock.get("updated_at") or payload.get("deleted_at") or "")
+        updated_at = deleted_at
+        rev = int(clock.get("rev") or payload.get("rev") or 0)
+        if row is None:
+            session_id = payload.get("session_id")
+            if session_id is None:
+                return "skipped"
+            created_at = str(payload.get("created_at") or deleted_at)
+            self._ensure_session_for_replication(int(session_id), created_at)
+            self.conn.execute(
+                """
+                INSERT INTO memory_items(
+                    session_id,
+                    kind,
+                    title,
+                    body_text,
+                    confidence,
+                    tags_text,
+                    active,
+                    created_at,
+                    updated_at,
+                    metadata_json,
+                    subtitle,
+                    facts,
+                    narrative,
+                    concepts,
+                    files_read,
+                    files_modified,
+                    prompt_number,
+                    import_key,
+                    deleted_at,
+                    rev
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(session_id),
+                    str(payload.get("kind") or ""),
+                    str(payload.get("title") or ""),
+                    str(payload.get("body_text") or ""),
+                    float(payload.get("confidence") or 0.5),
+                    str(payload.get("tags_text") or ""),
+                    0,
+                    created_at,
+                    updated_at,
+                    metadata_json,
+                    payload.get("subtitle"),
+                    payload.get("facts"),
+                    payload.get("narrative"),
+                    payload.get("concepts"),
+                    payload.get("files_read"),
+                    payload.get("files_modified"),
+                    payload.get("prompt_number"),
+                    import_key,
+                    deleted_at,
+                    rev,
+                ),
+            )
+            return "inserted"
+        self.conn.execute(
+            """
+            UPDATE memory_items
+            SET active = 0,
+                deleted_at = ?,
+                updated_at = ?,
+                metadata_json = ?,
+                rev = ?
+            WHERE import_key = ?
+            """,
+            (deleted_at, updated_at, metadata_json, rev, import_key),
+        )
+        return "updated"
 
     def start_session(
         self,
@@ -835,13 +1321,15 @@ class MemoryStore:
         tags: Iterable[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        created_at = dt.datetime.now(dt.UTC).isoformat()
+        created_at = self._now_iso()
         tags_text = " ".join(sorted(set(tags or [])))
-        import_key = None
-        if metadata and metadata.get("import_key"):
-            import_key = metadata.get("import_key")
-        if metadata and metadata.get("flush_batch"):
-            meta_text = db.to_json(metadata)
+        metadata_payload = dict(metadata or {})
+        metadata_payload.setdefault("clock_device_id", self.device_id)
+        import_key = metadata_payload.get("import_key") or None
+        if not import_key:
+            import_key = str(uuid4())
+        if metadata_payload.get("flush_batch"):
+            meta_text = db.to_json(metadata_payload)
             row = self.conn.execute(
                 """
                 SELECT id FROM memory_items
@@ -865,9 +1353,11 @@ class MemoryStore:
                 created_at,
                 updated_at,
                 metadata_json,
+                deleted_at,
+                rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -878,7 +1368,9 @@ class MemoryStore:
                 tags_text,
                 created_at,
                 created_at,
-                db.to_json(metadata),
+                db.to_json(metadata_payload),
+                None,
+                1,
                 import_key,
             ),
         )
@@ -888,6 +1380,7 @@ class MemoryStore:
             raise RuntimeError("Failed to create memory item")
         memory_id = int(lastrowid)
         self._store_vectors(memory_id, title, body_text)
+        self._record_memory_item_op(memory_id, "upsert")
         return memory_id
 
     def remember_observation(
@@ -905,7 +1398,7 @@ class MemoryStore:
         confidence: float = 0.5,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        created_at = dt.datetime.now(dt.UTC).isoformat()
+        created_at = self._now_iso()
         tags_text = " ".join(
             self._derive_tags(
                 kind=kind,
@@ -916,6 +1409,7 @@ class MemoryStore:
             )
         )
         metadata_payload = dict(metadata or {})
+        metadata_payload.setdefault("clock_device_id", self.device_id)
         if metadata_payload.get("flush_batch"):
             meta_text = db.to_json(metadata_payload)
             row = self.conn.execute(
@@ -943,9 +1437,9 @@ class MemoryStore:
             if value is None:
                 continue
             metadata_payload[key] = value
-        import_key = None
-        if metadata_payload.get("import_key"):
-            import_key = metadata_payload.get("import_key")
+        import_key = metadata_payload.get("import_key") or None
+        if not import_key:
+            import_key = str(uuid4())
         cur = self.conn.execute(
             """
             INSERT INTO memory_items(
@@ -966,9 +1460,11 @@ class MemoryStore:
                 files_read,
                 files_modified,
                 prompt_number,
+                deleted_at,
+                rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -987,6 +1483,8 @@ class MemoryStore:
                 db.to_json(files_read or []),
                 db.to_json(files_modified or []),
                 prompt_number,
+                None,
+                1,
                 import_key,
             ),
         )
@@ -996,6 +1494,7 @@ class MemoryStore:
             raise RuntimeError("Failed to create observation")
         memory_id = int(lastrowid)
         self._store_vectors(memory_id, title, narrative)
+        self._record_memory_item_op(memory_id, "upsert")
         return memory_id
 
     def backfill_tags_text(
@@ -1379,11 +1878,26 @@ class MemoryStore:
         return {"checked": checked, "deactivated": len(ids)}
 
     def forget(self, memory_id: int) -> None:
+        row = self.conn.execute(
+            "SELECT rev, metadata_json FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            return
+        metadata = self._normalize_metadata(row["metadata_json"])
+        metadata.setdefault("clock_device_id", self.device_id)
+        rev = int(row["rev"] or 0) + 1
+        now = self._now_iso()
         self.conn.execute(
-            "UPDATE memory_items SET active = 0, updated_at = ? WHERE id = ?",
-            (dt.datetime.now(dt.UTC).isoformat(), memory_id),
+            """
+            UPDATE memory_items
+            SET active = 0, deleted_at = ?, updated_at = ?, metadata_json = ?, rev = ?
+            WHERE id = ?
+            """,
+            (now, now, db.to_json(metadata), rev, memory_id),
         )
         self.conn.commit()
+        self._record_memory_item_op(memory_id, "delete")
 
     def get(self, memory_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(

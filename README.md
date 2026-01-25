@@ -68,6 +68,7 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
 - `opencode-mem export-memories` / `opencode-mem import-memories` – export and import memories by project for sharing or backup.
+- `opencode-mem sync` – enable peer sync, pair devices, and run the sync daemon.
 
 ## Semantic recall
 
@@ -216,6 +217,48 @@ git push origin v0.1.1
 ## Configuration
 
 Configuration is stored in `~/.config/opencode-mem/config.json` (override with `OPENCODE_MEM_CONFIG`). Environment variables always take precedence.
+
+### Sync quickstart (Phase 1)
+
+```bash
+# Enable sync (generates device keys)
+opencode-mem sync enable
+
+# Start daemon (foreground)
+opencode-mem sync daemon
+```
+
+Pair on device A:
+
+```bash
+opencode-mem sync pair
+```
+
+Copy the payload to device B:
+
+```bash
+opencode-mem sync pair --accept '<payload>'
+```
+
+Status and one-off sync:
+
+```bash
+opencode-mem sync status
+opencode-mem sync once
+```
+
+Autostart (macOS + Linux):
+
+```bash
+opencode-mem sync install
+```
+
+Relevant config keys (override with env vars):
+
+- `sync_enabled` / `OPENCODE_MEM_SYNC_ENABLED`
+- `sync_host` / `OPENCODE_MEM_SYNC_HOST`
+- `sync_port` / `OPENCODE_MEM_SYNC_PORT`
+- `sync_interval_s` / `OPENCODE_MEM_SYNC_INTERVAL_S`
 
 The viewer includes a Settings modal for the observer provider, model, and max chars. Changes write to the config file; environment variables still override those values.
 

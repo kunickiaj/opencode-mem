@@ -58,6 +58,125 @@ def test_recent_filters(tmp_path: Path) -> None:
     assert observations[0]["kind"] == "observation"
 
 
+def test_replication_schema_bootstrap(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        table_rows = store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        tables = {row["name"] for row in table_rows if row["name"]}
+        assert "replication_ops" in tables
+        assert "replication_cursors" in tables
+        assert "sync_peers" in tables
+        assert "sync_attempts" in tables
+
+        memory_columns = {
+            row["name"]
+            for row in store.conn.execute("PRAGMA table_info(memory_items)").fetchall()
+            if row["name"]
+        }
+        assert "deleted_at" in memory_columns
+        assert "rev" in memory_columns
+    finally:
+        store.close()
+
+
+def test_replication_ops_roundtrip(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        session_id = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        store_a.remember(session_id, kind="note", title="Alpha", body_text="Alpha body")
+        ops, cursor = store_a.load_replication_ops_since(None, limit=10)
+        assert len(ops) == 1
+        assert cursor
+
+        result = store_b.apply_replication_ops(ops)
+        assert result["inserted"] == 1
+        entity_id = ops[0]["entity_id"]
+        row = store_b.conn.execute(
+            "SELECT title FROM memory_items WHERE import_key = ?",
+            (entity_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["title"] == "Alpha"
+
+        more_ops, next_cursor = store_a.load_replication_ops_since(cursor, limit=10)
+        assert more_ops == []
+        assert next_cursor is None
+    finally:
+        store_a.close()
+        store_b.close()
+
+
+def test_replication_ops_idempotent(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        session_id = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        store_a.remember(session_id, kind="note", title="Beta", body_text="Beta body")
+        ops, _ = store_a.load_replication_ops_since(None, limit=10)
+
+        first = store_b.apply_replication_ops(ops)
+        assert first["inserted"] == 1
+        second = store_b.apply_replication_ops(ops)
+        assert second["skipped"] == len(ops)
+    finally:
+        store_a.close()
+        store_b.close()
+
+
+def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        session_id = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        memory_id = store_a.remember(
+            session_id,
+            kind="note",
+            title="Gamma",
+            body_text="Gamma body",
+        )
+        store_a.forget(memory_id)
+        ops, _ = store_a.load_replication_ops_since(None, limit=10)
+        delete_op = next(op for op in ops if op["op_type"] == "delete")
+        upsert_op = next(op for op in ops if op["op_type"] == "upsert")
+
+        result = store_b.apply_replication_ops([delete_op, upsert_op])
+        assert result["inserted"] == 1
+        row = store_b.conn.execute(
+            "SELECT active, deleted_at FROM memory_items WHERE import_key = ?",
+            (delete_op["entity_id"],),
+        ).fetchone()
+        assert row is not None
+        assert row["active"] == 0
+        assert row["deleted_at"]
+    finally:
+        store_a.close()
+        store_b.close()
+
+
 def test_usage_stats(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

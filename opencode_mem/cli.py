@@ -15,14 +15,21 @@ import typer
 from rich import print
 
 from . import db
-from .config import load_config
+from .config import get_config_path, load_config, read_config_file, write_config_file
 from .db import DEFAULT_DB_PATH
 from .store import MemoryStore
 from .summarizer import Summarizer
+from .sync_daemon import run_sync_daemon, sync_once
+from .sync_discovery import update_peer_addresses
+from .sync_identity import ensure_device_identity
 from .utils import resolve_project
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT, start_viewer
 
 app = typer.Typer(help="opencode-mem: persistent memory for OpenCode CLI")
+sync_app = typer.Typer(help="Sync opencode-mem between devices")
+sync_peers_app = typer.Typer(help="Manage sync peers")
+app.add_typer(sync_app, name="sync")
+sync_app.add_typer(sync_peers_app, name="peers")
 
 
 def _store(db_path: str | None) -> MemoryStore:
@@ -72,6 +79,22 @@ def _compact_list(text: str, limit: int) -> str:
     if len(items) > limit:
         items = items[:limit] + [f"... (+{len(items) - limit} more)"]
     return ", ".join(items)
+
+
+def _read_config_or_exit() -> dict[str, Any]:
+    try:
+        return read_config_file()
+    except ValueError as exc:
+        print(f"[red]Invalid config file: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+def _write_config_or_exit(data: dict[str, Any]) -> None:
+    try:
+        write_config_file(data)
+    except OSError as exc:
+        print(f"[red]Failed to write config: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
 
 def _build_import_key(
@@ -1144,6 +1167,299 @@ def serve(
         return
     print(f"[green]Viewer running at http://{host}:{port}[/green]")
     start_viewer(host=host, port=port, background=False)
+
+
+@sync_app.command("enable")
+def sync_enable(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str | None = typer.Option(None, help="Host to bind sync server"),
+    port: int | None = typer.Option(None, help="Port to bind sync server"),
+    interval_s: int | None = typer.Option(None, help="Sync interval in seconds"),
+) -> None:
+    """Enable sync and initialize device identity."""
+    store = _store(db_path)
+    try:
+        device_id, fingerprint = ensure_device_identity(store.conn)
+    finally:
+        store.close()
+    config_data = _read_config_or_exit()
+    config = load_config()
+    config_data["sync_enabled"] = True
+    config_data["sync_host"] = host or config.sync_host
+    config_data["sync_port"] = port or config.sync_port
+    config_data["sync_interval_s"] = interval_s or config.sync_interval_s
+    _write_config_or_exit(config_data)
+    config_path = get_config_path()
+    print("[green]Sync enabled[/green]")
+    print(f"- Config: {config_path}")
+    print(f"- Device ID: {device_id}")
+    print(f"- Fingerprint: {fingerprint}")
+    print(f"- Listen: {config_data['sync_host']}:{config_data['sync_port']}")
+    print("- Run: opencode-mem sync daemon")
+
+
+@sync_app.command("disable")
+def sync_disable() -> None:
+    """Disable sync without deleting keys or peers."""
+    config_data = _read_config_or_exit()
+    config_data["sync_enabled"] = False
+    _write_config_or_exit(config_data)
+    print("[yellow]Sync disabled[/yellow]")
+
+
+@sync_app.command("status")
+def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """Show sync configuration and peer summary."""
+    config = load_config()
+    store = _store(db_path)
+    try:
+        row = store.conn.execute(
+            "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
+        ).fetchone()
+        peers = store.conn.execute(
+            "SELECT peer_device_id, name, last_sync_at, last_error FROM sync_peers"
+        ).fetchall()
+    finally:
+        store.close()
+    config_path = get_config_path()
+    print(f"- Enabled: {config.sync_enabled}")
+    print(f"- Config: {config_path}")
+    print(f"- Listen: {config.sync_host}:{config.sync_port}")
+    print(f"- Interval: {config.sync_interval_s}s")
+    if row is None:
+        print("- Device ID: (not initialized)")
+    else:
+        print(f"- Device ID: {row['device_id']}")
+        print(f"- Fingerprint: {row['fingerprint']}")
+    if not peers:
+        print("- Peers: none")
+    else:
+        print(f"- Peers: {len(peers)}")
+        for peer in peers:
+            label = peer["name"] or peer["peer_device_id"]
+            last_error = peer["last_error"] or "ok"
+            last_sync = peer["last_sync_at"] or "never"
+            print(f"  - {label}: last_sync={last_sync}, status={last_error}")
+
+
+@sync_app.command("pair")
+def sync_pair(
+    accept: str | None = typer.Option(None, help="Accept pairing payload (JSON)"),
+    name: str | None = typer.Option(None, help="Label for the peer"),
+    address: str | None = typer.Option(None, help="Override peer address"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Print pairing payload or accept a peer payload."""
+    store = _store(db_path)
+    try:
+        if accept:
+            try:
+                payload = json.loads(accept)
+            except json.JSONDecodeError as exc:
+                print(f"[red]Invalid pairing payload: {exc}[/red]")
+                raise typer.Exit(code=1) from exc
+            device_id = str(payload.get("device_id") or "")
+            fingerprint = str(payload.get("fingerprint") or "")
+            resolved_address = address or str(payload.get("address") or "")
+            if not device_id or not fingerprint or not resolved_address:
+                print("[red]Pairing payload missing device_id, fingerprint, or address[/red]")
+                raise typer.Exit(code=1)
+            update_peer_addresses(
+                store.conn,
+                device_id,
+                [resolved_address],
+                name=name,
+                pinned_fingerprint=fingerprint,
+            )
+            print(f"[green]Paired with {device_id}[/green]")
+            return
+
+        device_id, fingerprint = ensure_device_identity(store.conn)
+        config = load_config()
+        resolved_address = address or f"{config.sync_host}:{config.sync_port}"
+        payload = {
+            "device_id": device_id,
+            "fingerprint": fingerprint,
+            "address": resolved_address,
+        }
+        print("[bold]Pairing payload[/bold]")
+        print(json.dumps(payload, ensure_ascii=False))
+        print("Share this with your other device and run:")
+        print("  opencode-mem sync pair --accept '<payload>'")
+    finally:
+        store.close()
+
+
+@sync_peers_app.command("list")
+def sync_peers_list(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """List known sync peers."""
+    store = _store(db_path)
+    try:
+        rows = store.conn.execute(
+            """
+            SELECT peer_device_id, name, last_sync_at, last_error, addresses_json
+            FROM sync_peers
+            ORDER BY name, peer_device_id
+            """
+        ).fetchall()
+    finally:
+        store.close()
+    if not rows:
+        print("[yellow]No sync peers found[/yellow]")
+        return
+    for row in rows:
+        addresses = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
+        label = row["name"] or row["peer_device_id"]
+        last_sync = row["last_sync_at"] or "never"
+        status = row["last_error"] or "ok"
+        address_text = ", ".join(addresses) if addresses else "(no addresses)"
+        print(
+            f"- {label} ({row['peer_device_id']}): {address_text} | last_sync={last_sync} | {status}"
+        )
+
+
+@sync_peers_app.command("remove")
+def sync_peers_remove(
+    peer: str = typer.Argument(..., help="Peer device_id or name"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Remove a peer."""
+    store = _store(db_path)
+    try:
+        rows = store.conn.execute(
+            "SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ? OR name = ?",
+            (peer, peer),
+        ).fetchall()
+        if not rows:
+            print("[yellow]Peer not found[/yellow]")
+            raise typer.Exit(code=1)
+        for row in rows:
+            store.conn.execute(
+                "DELETE FROM sync_peers WHERE peer_device_id = ?",
+                (row["peer_device_id"],),
+            )
+        store.conn.commit()
+    finally:
+        store.close()
+    print(f"[green]Removed {len(rows)} peer(s)[/green]")
+
+
+@sync_peers_app.command("rename")
+def sync_peers_rename(
+    peer_device_id: str = typer.Argument(..., help="Peer device_id"),
+    name: str = typer.Argument(..., help="New name"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Rename a peer."""
+    store = _store(db_path)
+    try:
+        row = store.conn.execute(
+            "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+            (peer_device_id,),
+        ).fetchone()
+        if row is None:
+            print("[yellow]Peer not found[/yellow]")
+            raise typer.Exit(code=1)
+        store.conn.execute(
+            "UPDATE sync_peers SET name = ? WHERE peer_device_id = ?",
+            (name, peer_device_id),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+    print(f"[green]Renamed peer {peer_device_id}[/green]")
+
+
+@sync_app.command("once")
+def sync_once_command(
+    peer: str | None = typer.Option(None, help="Peer name or device_id"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Run a single sync pass."""
+    store = _store(db_path)
+    try:
+        if peer:
+            rows = store.conn.execute(
+                """
+                SELECT peer_device_id, addresses_json
+                FROM sync_peers
+                WHERE peer_device_id = ? OR name = ?
+                """,
+                (peer, peer),
+            ).fetchall()
+        else:
+            rows = store.conn.execute(
+                "SELECT peer_device_id, addresses_json FROM sync_peers"
+            ).fetchall()
+        if not rows:
+            print("[yellow]No peers available for sync[/yellow]")
+            raise typer.Exit(code=1)
+        for row in rows:
+            addresses = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
+            if not isinstance(addresses, list):
+                addresses = []
+            resolved = [str(item) for item in addresses if isinstance(item, str)]
+            result = sync_once(store, str(row["peer_device_id"]), resolved)
+            status = "ok" if result.get("ok") else "error"
+            print(f"- {row['peer_device_id']}: {status}")
+    finally:
+        store.close()
+
+
+@sync_app.command("daemon")
+def sync_daemon(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str | None = typer.Option(None, help="Host to bind sync server"),
+    port: int | None = typer.Option(None, help="Port to bind sync server"),
+    interval_s: int | None = typer.Option(None, help="Sync interval in seconds"),
+) -> None:
+    """Run the sync daemon loop."""
+    config = load_config()
+    run_sync_daemon(
+        host=host or config.sync_host,
+        port=port or config.sync_port,
+        interval_s=interval_s or config.sync_interval_s,
+        db_path=Path(db_path) if db_path else None,
+    )
+
+
+@sync_app.command("install")
+def sync_install(
+    user: bool = typer.Option(True, help="Install user-level service (systemd only)"),
+    system: bool = typer.Option(False, help="Install system-level service (requires root)"),
+) -> None:
+    """Install autostart service for sync daemon."""
+    if system and user:
+        print("[red]Use only one of --user or --system[/red]")
+        raise typer.Exit(code=1)
+    install_mode = "system" if system else "user"
+    if sys.platform.startswith("darwin"):
+        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "launchd"
+        plist_path = source / "com.opencode-mem.sync.plist"
+        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(plist_path.read_text())
+        print(f"[green]Installed LaunchAgent at {dest}[/green]")
+        print("Run: launchctl load -w ~/Library/LaunchAgents/com.opencode-mem.sync.plist")
+        return
+
+    if not sys.platform.startswith("linux"):
+        print("[yellow]Autostart install is only supported on macOS and Linux[/yellow]")
+        raise typer.Exit(code=1)
+
+    source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "systemd"
+    unit_path = source / "opencode-mem-sync.service"
+    if install_mode == "system":
+        dest = Path("/etc/systemd/system/opencode-mem-sync.service")
+        dest.write_text(unit_path.read_text())
+        print(f"[green]Installed system service at {dest}[/green]")
+        print("Run: systemctl enable --now opencode-mem-sync.service")
+        return
+    dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(unit_path.read_text())
+    print(f"[green]Installed user service at {dest}[/green]")
+    print("Run: systemctl --user enable --now opencode-mem-sync.service")
 
 
 @app.command()
