@@ -378,6 +378,40 @@ class MemoryStore:
             return 0
         return int(row["total_tokens"] or 0)
 
+    def _session_discovery_tokens_by_prompt(self, opencode_session_id: str) -> dict[int, int]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                CAST(json_extract(payload_json, '$.prompt_number') AS INTEGER) AS prompt_number,
+                COALESCE(
+                    SUM(
+                        COALESCE(CAST(json_extract(payload_json, '$.usage.input_tokens') AS INTEGER), 0)
+                        + COALESCE(CAST(json_extract(payload_json, '$.usage.output_tokens') AS INTEGER), 0)
+                        + COALESCE(
+                            CAST(json_extract(payload_json, '$.usage.cache_creation_input_tokens') AS INTEGER),
+                            0
+                        )
+                    ),
+                    0
+                ) AS total_tokens
+            FROM raw_events
+            WHERE opencode_session_id = ?
+              AND event_type = 'assistant_usage'
+              AND json_valid(payload_json) = 1
+              AND json_extract(payload_json, '$.prompt_number') IS NOT NULL
+            GROUP BY CAST(json_extract(payload_json, '$.prompt_number') AS INTEGER)
+            """,
+            (opencode_session_id,),
+        ).fetchall()
+        totals: dict[int, int] = {}
+        for row in rows:
+            try:
+                prompt_number = int(row["prompt_number"])
+            except (TypeError, ValueError):
+                continue
+            totals[prompt_number] = int(row["total_tokens"] or 0)
+        return totals
+
     def _session_discovery_tokens_from_transcript(self, session_id: int) -> int:
         row = self.conn.execute(
             """
@@ -396,32 +430,80 @@ class MemoryStore:
             return 0
         return self.estimate_tokens(text)
 
-    def backfill_discovery_tokens(self, *, limit_sessions: int = 50) -> int:
-        """Backfill missing per-memory discovery_tokens for existing databases.
+    def _prompt_length_weights(self, session_id: int) -> dict[int, int]:
+        rows = self.conn.execute(
+            "SELECT prompt_number, prompt_text FROM user_prompts WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        weights: dict[int, int] = {}
+        for row in rows:
+            value = row["prompt_number"]
+            if value is None:
+                continue
+            try:
+                prompt_number = int(value)
+            except (TypeError, ValueError):
+                continue
+            text = str(row["prompt_text"] or "")
+            weights[prompt_number] = weights.get(prompt_number, 0) + max(0, len(text))
+        return weights
 
-        We treat discovery_tokens as the session work investment (input+output+cache creation)
-        from OpenCode's assistant usage events, split evenly across observer-generated memories.
+    def _allocate_tokens_by_weight(
+        self,
+        total_tokens: int,
+        *,
+        keys: list[int | None],
+        weights: dict[int, int],
+    ) -> dict[int | None, int]:
+        if total_tokens <= 0 or not keys:
+            return {key: 0 for key in keys}
+
+        normalized: dict[int | None, int] = {}
+        for key in keys:
+            if key is None:
+                normalized[key] = 1
+            else:
+                normalized[key] = max(0, int(weights.get(key, 1) or 1))
+
+        weight_total = sum(normalized.values())
+        if weight_total <= 0:
+            normalized = {key: 1 for key in keys}
+            weight_total = len(keys)
+
+        base: dict[int | None, int] = {}
+        remainders: list[tuple[int, str, int | None]] = []
+        for key in keys:
+            numerator = total_tokens * normalized[key]
+            base[key] = numerator // weight_total
+            remainder = numerator % weight_total
+            stable = "unknown" if key is None else str(key)
+            remainders.append((int(remainder), stable, key))
+
+        remaining = total_tokens - sum(base.values())
+        if remaining > 0:
+            remainders.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            for _, __, key in remainders[:remaining]:
+                base[key] += 1
+        return base
+
+    def backfill_discovery_tokens(self, *, limit_sessions: int = 50) -> int:
+        """Backfill discovery_group + discovery_tokens for observer memories.
+
+        Best effort uses raw assistant_usage events when possible; otherwise it falls back to
+        session transcript estimates and prompt length weighting.
         """
 
-        rows = self.conn.execute(
+        target_rows = self.conn.execute(
             """
             SELECT DISTINCT s.id AS session_id, os.opencode_session_id AS opencode_session_id
             FROM sessions s
             JOIN opencode_sessions os ON os.session_id = s.id
             JOIN memory_items mi ON mi.session_id = s.id
-            WHERE s.tool_version = 'raw_events'
+            WHERE json_valid(mi.metadata_json) = 1
+              AND json_extract(mi.metadata_json, '$.source') = 'observer'
               AND (
-                mi.metadata_json IS NULL
-                OR TRIM(mi.metadata_json) = ''
-                OR json_valid(mi.metadata_json) = 0
-                OR COALESCE(
-                    CASE
-                        WHEN json_valid(mi.metadata_json) = 1
-                        THEN CAST(json_extract(mi.metadata_json, '$.discovery_tokens') AS INTEGER)
-                        ELSE 0
-                    END,
-                    0
-                ) <= 0
+                json_extract(mi.metadata_json, '$.discovery_group') IS NULL
+                OR COALESCE(CAST(json_extract(mi.metadata_json, '$.discovery_backfill_version') AS INTEGER), 0) < 2
               )
             ORDER BY s.id DESC
             LIMIT ?
@@ -430,69 +512,109 @@ class MemoryStore:
         ).fetchall()
 
         updated = 0
-        for row in rows:
+        for row in target_rows:
             session_id = int(row["session_id"])
             opencode_session_id = str(row["opencode_session_id"] or "").strip()
             if not opencode_session_id:
                 continue
 
             items = self.conn.execute(
-                "SELECT id, metadata_json FROM memory_items WHERE session_id = ?",
+                "SELECT id, prompt_number, metadata_json FROM memory_items WHERE session_id = ?",
                 (session_id,),
             ).fetchall()
             if not items:
                 continue
 
-            relevant: list[tuple[int, dict[str, Any]]] = []
-            missing_ids: list[int] = []
+            grouped: dict[int | None, list[tuple[int, dict[str, Any]]]] = {}
             for item in items:
                 meta = db.from_json(item["metadata_json"])
-                source = str(meta.get("source") or "")
-                if source and source != "observer":
+                if str(meta.get("source") or "") != "observer":
                     continue
-                current_tokens = 0
+                pn = item["prompt_number"]
+                if pn is None:
+                    pn_meta = meta.get("prompt_number")
+                    try:
+                        pn = int(pn_meta) if pn_meta is not None else None
+                    except (TypeError, ValueError):
+                        pn = None
+                prompt_number: int | None
                 try:
-                    current_tokens = int(meta.get("discovery_tokens") or 0)
+                    prompt_number = int(pn) if pn is not None else None
                 except (TypeError, ValueError):
-                    current_tokens = 0
-                relevant.append((int(item["id"]), meta))
-                if current_tokens <= 0:
-                    missing_ids.append(int(item["id"]))
+                    prompt_number = None
+                grouped.setdefault(prompt_number, []).append((int(item["id"]), meta))
 
-            if not relevant or not missing_ids:
+            if not grouped:
                 continue
 
+            by_prompt = self._session_discovery_tokens_by_prompt(opencode_session_id)
             session_tokens = self._session_discovery_tokens_from_raw_events(opencode_session_id)
-            source_label = "usage"
+            source_label = "usage" if session_tokens > 0 else "estimate"
             if session_tokens <= 0:
                 session_tokens = self._session_discovery_tokens_from_transcript(session_id)
-                source_label = "estimate"
-            if session_tokens <= 0:
-                continue
 
-            per_item = max(1, session_tokens // len(relevant))
-            now = self._now_iso()
-            for memory_id, meta in relevant:
-                if memory_id not in missing_ids:
+            group_tokens: dict[int | None, int] = {}
+            keys = sorted(grouped.keys(), key=lambda k: (-1 if k is None else k))
+            if by_prompt:
+                assigned = 0
+                for key in keys:
+                    if key is None:
+                        continue
+                    group_tokens[key] = int(by_prompt.get(key, 0) or 0)
+                    assigned += group_tokens[key]
+                if None in grouped:
+                    group_tokens[None] = max(0, int(session_tokens) - assigned)
+            else:
+                if session_tokens <= 0:
                     continue
-                meta["discovery_tokens"] = per_item
-                meta["discovery_source"] = source_label
-                self.conn.execute(
-                    "UPDATE memory_items SET metadata_json = ?, updated_at = ? WHERE id = ?",
-                    (db.to_json(meta), now, memory_id),
+                weights = self._prompt_length_weights(session_id)
+                allocation = self._allocate_tokens_by_weight(
+                    int(session_tokens),
+                    keys=keys,
+                    weights=weights,
                 )
-                updated += 1
+                group_tokens.update({k: int(v) for k, v in allocation.items()})
+
+            now = self._now_iso()
+            for key, group_items in grouped.items():
+                if key is None:
+                    group_id = f"{opencode_session_id}:unknown"
+                else:
+                    group_id = f"{opencode_session_id}:p{key}"
+                tokens = int(group_tokens.get(key, 0) or 0)
+                for memory_id, meta in group_items:
+                    existing_version = 0
+                    try:
+                        existing_version = int(meta.get("discovery_backfill_version") or 0)
+                    except (TypeError, ValueError):
+                        existing_version = 0
+                    existing_tokens = None
+                    if meta.get("discovery_tokens") is not None:
+                        try:
+                            existing_tokens = int(meta.get("discovery_tokens"))
+                        except (TypeError, ValueError):
+                            existing_tokens = None
+                    if (
+                        existing_version >= 2
+                        and meta.get("discovery_group") == group_id
+                        and existing_tokens == tokens
+                        and meta.get("discovery_source") == source_label
+                    ):
+                        continue
+                    meta["discovery_group"] = group_id
+                    meta["discovery_tokens"] = tokens
+                    meta["discovery_source"] = source_label
+                    meta["discovery_backfill_version"] = 2
+                    self.conn.execute(
+                        "UPDATE memory_items SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                        (db.to_json(meta), now, memory_id),
+                    )
+                    updated += 1
             self.conn.commit()
 
         return updated
 
-    def work_investment_tokens(self) -> int:
-        """Sum discovery_tokens across stored memories.
-
-        This mirrors claude-mem's token economics model where discovery_tokens represents
-        the token cost to arrive at an observation.
-        """
-
+    def work_investment_tokens_sum(self) -> int:
         row = self.conn.execute(
             """
             SELECT
@@ -515,6 +637,41 @@ class MemoryStore:
         if row is None:
             return 0
         return int(row["total"] or 0)
+
+    def work_investment_tokens(self) -> int:
+        """Additive work investment from unique discovery_group values."""
+
+        group_rows = self.conn.execute(
+            """
+            SELECT
+                json_extract(metadata_json, '$.discovery_group') AS grp,
+                MAX(
+                    COALESCE(CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER), 0)
+                ) AS tokens
+            FROM memory_items
+            WHERE json_valid(metadata_json) = 1
+              AND json_extract(metadata_json, '$.discovery_group') IS NOT NULL
+            GROUP BY json_extract(metadata_json, '$.discovery_group')
+            """
+        ).fetchall()
+        grouped_total = sum(int(row["tokens"] or 0) for row in group_rows)
+
+        ungrouped_row = self.conn.execute(
+            """
+            SELECT
+                COALESCE(
+                    SUM(
+                        COALESCE(CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER), 0)
+                    ),
+                    0
+                ) AS tokens
+            FROM memory_items
+            WHERE json_valid(metadata_json) = 1
+              AND json_extract(metadata_json, '$.discovery_group') IS NULL
+            """
+        ).fetchone()
+        ungrouped_total = int(ungrouped_row["tokens"] or 0) if ungrouped_row else 0
+        return grouped_total + ungrouped_total
 
     def _ensure_session_for_replication(self, session_id: int, started_at: str | None) -> None:
         row = self.conn.execute(
@@ -3076,13 +3233,23 @@ class MemoryStore:
             if discovery_tokens is not None:
                 try:
                     tokens = int(discovery_tokens)
-                    if tokens > 0:
+                    if tokens >= 0:
                         return tokens
                 except (TypeError, ValueError):
                     pass
             title = item.title if isinstance(item, MemoryResult) else item.get("title", "")
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
+
+        def discovery_group(item: MemoryResult | dict[str, Any]) -> str:
+            metadata = get_metadata(item)
+            value = metadata.get("discovery_group")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            fallback_id = item_id(item)
+            if fallback_id is not None:
+                return f"memory:{fallback_id}"
+            return "unknown"
 
         def avoided_work_tokens(item: MemoryResult | dict[str, Any]) -> tuple[int, str]:
             metadata = get_metadata(item)
@@ -3349,7 +3516,12 @@ class MemoryStore:
                 section_blocks.append(f"## {title}\n")
         pack_text = "\n\n".join(section_blocks)
         pack_tokens = self.estimate_tokens(pack_text)
-        work_tokens = sum(estimate_work_tokens(m) for m in final_items)
+        work_tokens_sum = sum(estimate_work_tokens(m) for m in final_items)
+        group_work: dict[str, int] = {}
+        for item in final_items:
+            key = discovery_group(item)
+            group_work[key] = max(group_work.get(key, 0), estimate_work_tokens(item))
+        work_tokens_unique = sum(group_work.values())
         avoided_tokens_total = 0
         avoided_known = 0
         avoided_unknown = 0
@@ -3362,7 +3534,7 @@ class MemoryStore:
                 avoided_sources[source] = avoided_sources.get(source, 0) + 1
             else:
                 avoided_unknown += 1
-        tokens_saved = max(0, work_tokens - pack_tokens)
+        tokens_saved = max(0, work_tokens_unique - pack_tokens)
         avoided_work_saved = max(0, avoided_tokens_total - pack_tokens)
         work_sources = [work_source(m) for m in final_items]
         usage_items = sum(1 for source in work_sources if source == "usage")
@@ -3384,9 +3556,9 @@ class MemoryStore:
 
         compression_ratio = None
         overhead_tokens = None
-        if work_tokens > 0:
-            compression_ratio = float(pack_tokens) / float(work_tokens)
-            overhead_tokens = int(pack_tokens) - int(work_tokens)
+        if work_tokens_unique > 0:
+            compression_ratio = float(pack_tokens) / float(work_tokens_unique)
+            overhead_tokens = int(pack_tokens) - int(work_tokens_unique)
 
         avoided_work_ratio = None
         if avoided_tokens_total > 0:
@@ -3398,7 +3570,8 @@ class MemoryStore:
             "token_budget": token_budget,
             "project": (filters or {}).get("project"),
             "fallback": "recent" if fallback_used else None,
-            "work_tokens": work_tokens,
+            "work_tokens_unique": work_tokens_unique,
+            "work_tokens": work_tokens_sum,
             "pack_tokens": pack_tokens,
             "tokens_saved": tokens_saved,
             "compression_ratio": compression_ratio,
@@ -3601,10 +3774,6 @@ class MemoryStore:
         return results
 
     def stats(self) -> dict[str, Any]:
-        # Keep existing databases accurate: fill missing discovery_tokens incrementally.
-        # This is bounded and idempotent; it should converge after a few viewer refreshes.
-        self.backfill_discovery_tokens(limit_sessions=25)
-
         total_memories = self.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
         active_memories = self.conn.execute(
             "SELECT COUNT(*) FROM memory_items WHERE active = 1"
@@ -3646,6 +3815,7 @@ class MemoryStore:
                 "tokens_written": sum(row["tokens_written"] or 0 for row in usage_rows),
                 "tokens_saved": sum(row["tokens_saved"] or 0 for row in usage_rows),
                 "work_investment_tokens": self.work_investment_tokens(),
+                "work_investment_tokens_sum": self.work_investment_tokens_sum(),
             },
         }
 

@@ -1574,7 +1574,7 @@ VIEWER_HTML = """<!doctype html>
           { label: "Memories", value: db.memory_items || 0, icon: "brain" },
           { label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
           { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
-          { label: "Work investment", value: usage.work_investment_tokens || 0, tooltip: "Tokens spent arriving at stored memories (from assistant usage; claude-mem parity)", icon: "pencil" },
+          { label: "Work investment", value: usage.work_investment_tokens || 0, tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)", icon: "pencil" },
           { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context", icon: "book-open" },
           { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context", icon: "trending-up" },
         ];
@@ -2016,7 +2016,10 @@ VIEWER_HTML = """<!doctype html>
         if (isAllProjects) {
           // Aggregate stats across latest pack per project
           items = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).items || 0), 0);
-          workTokens = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_tokens || 0), 0);
+          workTokens = recentPacks.reduce((sum, p) => {
+            const meta = (p.metadata_json || {});
+            return sum + (meta.work_tokens_unique || meta.work_tokens || 0);
+          }, 0);
           packTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_read || 0), 0);
           savedTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_saved || 0), 0);
           semanticCandidates = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_candidates || 0), 0);
@@ -2033,7 +2036,7 @@ VIEWER_HTML = """<!doctype html>
           const latest = recentPacks[0];
           const metadata = latest.metadata_json || {};
           items = metadata.items || 0;
-          workTokens = metadata.work_tokens || 0;
+          workTokens = metadata.work_tokens_unique || metadata.work_tokens || 0;
           packTokens = latest.tokens_read || 0;
           savedTokens = latest.tokens_saved || 0;
           semanticCandidates = metadata.semantic_candidates || 0;
