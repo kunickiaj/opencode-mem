@@ -237,7 +237,6 @@ VIEWER_HTML = """<!doctype html>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%231f6f5c'/%3E%3Cstop offset='100%25' style='stop-color:%23e67e4d'/%3E%3C/linearGradient%3E%3Cfilter id='shadow'%3E%3CfeDropShadow dx='0' dy='2' stdDeviation='3' flood-color='%23000' flood-opacity='0.5'/%3E%3C/filter%3E%3C/defs%3E%3Crect x='5' y='5' width='90' height='90' rx='16' fill='%23fff' stroke='%23000' stroke-width='3' filter='url(%23shadow)'/%3E%3Crect x='8' y='8' width='84' height='84' rx='14' fill='url(%23g1)'/%3E%3Cpath d='M20 75V25h15l15 25 15-25h15v50h-15V45l-15 22-15-22v30z' fill='white'/%3E%3C/svg%3E" />
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="/static/qrcode.bundle.min.js"></script>
     <style>
       :root {
         --bg: #f7f1e7;
@@ -682,31 +681,9 @@ VIEWER_HTML = """<!doctype html>
       [data-theme="dark"] .pairing-body pre {
         background: rgba(255, 255, 255, 0.06);
       }
-      .pairing-qr {
-        width: 160px;
-        height: 160px;
-        border-radius: 12px;
-        border: 1px solid rgba(25, 24, 23, 0.12);
-        background: #fff;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #223a5e;
-      }
-      [data-theme="dark"] .pairing-qr {
-        background: rgba(18, 22, 28, 0.9);
-        color: rgba(233, 238, 245, 0.8);
-      }
-      .pairing-qr img {
-        width: 140px;
-        height: 140px;
-      }
       @media (max-width: 900px) {
         .pairing-body {
           grid-template-columns: 1fr;
-        }
-        .pairing-qr {
-          justify-self: start;
         }
       }
       .section-meta .badge {
@@ -1316,7 +1293,6 @@ VIEWER_HTML = """<!doctype html>
           </div>
           <div class="pairing-body">
             <pre id="pairingPayload">Loading…</pre>
-            <div class="pairing-qr" id="pairingQr"></div>
           </div>
           <div class="peer-meta" id="pairingHint">Scan or copy the payload to pair a device.</div>
         </div>
@@ -1388,7 +1364,6 @@ VIEWER_HTML = """<!doctype html>
       const syncNowButton = document.getElementById("syncNowButton");
       const pairingPayload = document.getElementById("pairingPayload");
       const pairingCopy = document.getElementById("pairingCopy");
-      const pairingQr = document.getElementById("pairingQr");
       const pairingHint = document.getElementById("pairingHint");
 
       let configDefaults = {};
@@ -1763,38 +1738,15 @@ VIEWER_HTML = """<!doctype html>
       }
 
       async function renderPairing(payload) {
-        if (!pairingPayload || !pairingQr) return;
+        if (!pairingPayload) return;
         if (!payload || typeof payload !== "object") {
           pairingPayload.textContent = "Pairing payload unavailable";
-          pairingQr.textContent = "";
           if (pairingHint) pairingHint.textContent = "Generate a device identity first.";
           return;
         }
         const text = JSON.stringify(payload);
         pairingPayload.textContent = text;
         if (pairingHint) pairingHint.textContent = "Scan or copy the payload to pair a device.";
-        if (typeof QRCode === "undefined") {
-          pairingQr.textContent = "QR unavailable";
-          return;
-        }
-        try {
-          const isDark = document.documentElement.getAttribute("data-theme") === "dark";
-          const colors = isDark
-            ? { dark: "#e9eef5ff", light: "#12161cff" }
-            : { dark: "#111111ff", light: "#ffffffff" };
-          const dataUrl = await QRCode.toDataURL(text, {
-            width: 160,
-            margin: 1,
-            color: colors,
-          });
-          pairingQr.textContent = "";
-          const img = document.createElement("img");
-          img.src = dataUrl;
-          img.alt = "Sync pairing QR";
-          pairingQr.appendChild(img);
-        } catch (err) {
-          pairingQr.textContent = "QR unavailable";
-        }
       }
 
       async function loadPairing() {
@@ -2405,11 +2357,13 @@ VIEWER_HTML = """<!doctype html>
 
       syncNowButton?.addEventListener("click", () => syncPeerNow());
       pairingCopy?.addEventListener("click", async () => {
-        const text = pairingPayload?.textContent || "";
-        if (!text) return;
+        const payloadText = pairingPayload?.textContent || "";
+        if (!payloadText) return;
+        const escaped = payloadText.replace(/'/g, `'\\''`);
+        const command = `opencode-mem sync pair --accept '${escaped}'`;
         try {
-          await navigator.clipboard.writeText(text);
-          if (pairingHint) pairingHint.textContent = "Copied pairing payload.";
+          await navigator.clipboard.writeText(command);
+          if (pairingHint) pairingHint.textContent = "Copied pairing command.";
         } catch (err) {
           if (pairingHint) pairingHint.textContent = "Copy failed.";
         }
@@ -2522,25 +2476,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/static/qrcode.bundle.min.js":
-            try:
-                import importlib.resources as resources
-
-                body = (
-                    resources.files("opencode_mem")
-                    .joinpath("static/qrcode.bundle.min.js")
-                    .read_bytes()
-                )
-            except Exception:
-                self.send_response(404)
-                self.end_headers()
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "application/javascript; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
         if parsed.path == "/":
             self._send_html()
             return
