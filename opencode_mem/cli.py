@@ -110,7 +110,7 @@ def _normalize_local_check_host(host: str) -> str:
 
 
 def _sync_daemon_running(host: str, port: int) -> bool:
-    return _port_open(_normalize_local_check_host(host), port)
+    return effective_status(host, port).running
 
 
 def _sync_pid_running() -> bool:
@@ -1533,27 +1533,29 @@ def sync_enable(
         desired_port,
         desired_interval,
     )
-    if _sync_daemon_running(desired_host, desired_port):
+    status = effective_status(desired_host, desired_port)
+    if status.running:
         if bind_changed:
-            try:
-                _run_service_action("restart", user=True, system=False)
-                print("[green]Sync daemon restarted[/green]")
-            except typer.Exit:
-                print("[yellow]Sync daemon already running[/yellow]")
-                print("Restart required to apply updated bind settings:")
-                print("- opencode-mem sync service restart")
-                print("- or stop/start your foreground daemon")
-        else:
+            if _run_service_action_quiet("restart", user=True, system=False):
+                status = effective_status(desired_host, desired_port)
+                if status.running:
+                    print(f"[green]Sync daemon running ({status.mechanism})[/green]")
+                    return
             print("[yellow]Sync daemon already running[/yellow]")
+            print("Restart required to apply updated bind settings:")
+            print("- opencode-mem sync service restart")
+            print("- or stop/start your foreground daemon")
+        else:
+            print(f"[yellow]Sync daemon already running ({status.mechanism})[/yellow]")
         return
     pid = spawn_daemon(
-        host=str(config_data["sync_host"]),
-        port=int(config_data["sync_port"]),
-        interval_s=int(config_data["sync_interval_s"]),
+        host=desired_host,
+        port=desired_port,
+        interval_s=desired_interval,
         db_path=db_path,
     )
-    status = effective_status(str(config_data["sync_host"]), int(config_data["sync_port"]))
-    if status.running and status.mechanism in {"pidfile", "port"}:
+    status = effective_status(desired_host, desired_port)
+    if status.running:
         print(f"[green]Sync daemon running ({status.mechanism})[/green]")
         return
     print(f"[yellow]Started sync daemon (pid {pid}) but it is not running[/yellow]")

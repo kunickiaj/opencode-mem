@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -58,14 +59,19 @@ def _sync_pid_path() -> Path:
 
 
 def _port_open(host: str, port: int) -> bool:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.2)
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for family, socktype, proto, _canon, address in infos:
         try:
-            return sock.connect_ex((host, port)) == 0
+            with socket.socket(family, socktype, proto) as sock:
+                sock.settimeout(0.2)
+                if sock.connect_ex(address) == 0:
+                    return True
         except OSError:
-            return False
+            continue
+    return False
 
 
 def _normalize_check_host(host: str) -> str:
@@ -116,6 +122,9 @@ def effective_status(host: str, port: int) -> SyncRuntimeStatus:
         svc = service_status_linux(user=True)
         if svc.running:
             return svc
+        system_svc = service_status_linux(user=False)
+        if system_svc.running:
+            return system_svc
     pid_path = _sync_pid_path()
     pid = _read_pid(pid_path)
     if pid is not None and _pid_running(pid):
