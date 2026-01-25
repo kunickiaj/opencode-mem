@@ -1,0 +1,11 @@
+[Unit]
+Description=opencode-mem sync daemon
+After=network-online.target
+
+[Service]
+ExecStart=opencode-mem sync daemon
+Restart=on-failure
+Environment=OPENCODE_MEM_CONFIG=%h/.config/opencode-mem/config.json
+
+[Install]
+WantedBy=default.target
