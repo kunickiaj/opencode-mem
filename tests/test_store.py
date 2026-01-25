@@ -245,6 +245,43 @@ def test_pack_reuse_savings(tmp_path: Path) -> None:
     assert usage["pack"]["tokens_saved"] > 0
 
 
+def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    meta = {
+        "discovery_group": "sess-1:p1",
+        "discovery_tokens": 100,
+        "discovery_source": "usage",
+    }
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha database index",
+        body_text="Shared keyword content",
+        metadata=meta,
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Beta networking sync",
+        body_text="Shared keyword content",
+        metadata=meta,
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("Shared keyword", limit=10)
+    metrics = pack.get("metrics") or {}
+    assert metrics.get("work_tokens_unique") == 100
+    assert metrics.get("work_tokens") == 200
+
+
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
@@ -274,6 +311,27 @@ def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
 
     stats = store.stats()
     assert stats["usage"]["totals"]["work_investment_tokens"] == 333
+    assert stats["usage"]["totals"]["work_investment_tokens_sum"] == 333
+
+
+def test_stats_work_investment_dedupes_discovery_group(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    meta = {"discovery_group": "sess:p1", "discovery_tokens": 500}
+    store.remember(session, kind="note", title="A", body_text="A", metadata=meta)
+    store.remember(session, kind="note", title="B", body_text="B", metadata=meta)
+    store.end_session(session)
+
+    stats = store.stats()
+    assert stats["usage"]["totals"]["work_investment_tokens"] == 500
+    assert stats["usage"]["totals"]["work_investment_tokens_sum"] == 1000
 
 
 def test_backfill_discovery_tokens_from_raw_events(tmp_path: Path) -> None:
@@ -326,12 +384,15 @@ def test_backfill_discovery_tokens_from_raw_events(tmp_path: Path) -> None:
     ).fetchall()
     meta_a = json.loads(rows[0]["metadata_json"])
     meta_b = json.loads(rows[1]["metadata_json"])
-    assert meta_a["discovery_tokens"] == 7
-    assert meta_b["discovery_tokens"] == 7
+    assert meta_a["discovery_tokens"] == 15
+    assert meta_b["discovery_tokens"] == 15
     assert meta_a["discovery_source"] == "usage"
 
+    assert meta_a["discovery_group"] == "sess-1:unknown"
+    assert meta_a["discovery_backfill_version"] == 2
+
     stats = store.stats()
-    assert stats["usage"]["totals"]["work_investment_tokens"] == 14
+    assert stats["usage"]["totals"]["work_investment_tokens"] == 15
 
 
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:

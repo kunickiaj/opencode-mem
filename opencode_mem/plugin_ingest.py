@@ -614,6 +614,15 @@ def ingest(payload: dict[str, Any]) -> None:
     else:
         discovery_tokens = store.estimate_tokens(discovery_text)
 
+    discovery_group = None
+    if isinstance(opencode_session_id, str) and opencode_session_id.strip():
+        if prompt_number is not None:
+            discovery_group = f"{opencode_session_id.strip()}:p{prompt_number}"
+        else:
+            discovery_group = f"{opencode_session_id.strip()}:unknown"
+    elif prompt_number is not None:
+        discovery_group = f"session:{session_id}:p{prompt_number}"
+
     observations_to_store = []
     if STORE_TYPED and has_meaningful_observation(parsed.observations):
         allowed_kinds = {
@@ -661,18 +670,14 @@ def ingest(payload: dict[str, Any]) -> None:
                 summary.request = derived_request
             summary_to_store = summary
 
-    total_items = len(observations_to_store) + (1 if summary_to_store else 0)
-    per_item_tokens = 0
-    if discovery_tokens > 0 and total_items > 0:
-        per_item_tokens = max(1, discovery_tokens // total_items)
-
     for obs in observations_to_store:
         metadata: dict[str, Any] = {"source": "observer"}
         if flush_batch:
             metadata["flush_batch"] = flush_batch
-        if per_item_tokens:
-            metadata["discovery_tokens"] = per_item_tokens
-            metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
+        if discovery_group:
+            metadata["discovery_group"] = discovery_group
+        metadata["discovery_tokens"] = int(discovery_tokens)
+        metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
         store.remember_observation(
             session_id,
             kind=obs.kind.strip().lower(),
@@ -705,9 +710,10 @@ def ingest(payload: dict[str, Any]) -> None:
             summary_metadata["flush_batch"] = flush_batch
         if request_original:
             summary_metadata["request_original"] = request_original
-        if per_item_tokens:
-            summary_metadata["discovery_tokens"] = per_item_tokens
-            summary_metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
+        if discovery_group:
+            summary_metadata["discovery_group"] = discovery_group
+        summary_metadata["discovery_tokens"] = int(discovery_tokens)
+        summary_metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
         store.add_session_summary(
             session_id,
             project,
