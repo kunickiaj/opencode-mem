@@ -139,6 +139,31 @@ def _spawn_sync_daemon(host: str, port: int, interval_s: int, db_path: str | Non
     return int(proc.pid)
 
 
+def _sync_pid_path() -> Path:
+    pid_path = os.environ.get("OPENCODE_MEM_SYNC_PID", "~/.opencode-mem/sync-daemon.pid")
+    return Path(os.path.expanduser(pid_path))
+
+
+def _stop_sync_pid() -> bool:
+    pid_path = _sync_pid_path()
+    pid = _read_pid(pid_path)
+    if pid is None:
+        return False
+    if not _pid_running(pid):
+        _clear_pid(pid_path)
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    for _ in range(30):
+        time.sleep(0.1)
+        if not _pid_running(pid):
+            _clear_pid(pid_path)
+            return True
+    return False
+
+
 def _build_service_commands(action: str, install_mode: str) -> list[list[str]]:
     if sys.platform.startswith("darwin"):
         label = "com.opencode-mem.sync"
@@ -1325,6 +1350,7 @@ def sync_enable(
         interval_s=int(config_data["sync_interval_s"]),
         db_path=db_path,
     )
+    _write_pid(_sync_pid_path(), pid)
     print(f"[green]Sync daemon started (pid {pid})[/green]")
     print("Logs: ~/.opencode-mem/sync-daemon.log")
 
@@ -1344,6 +1370,9 @@ def sync_disable(
         _run_service_action("stop", user=True, system=False)
         print("[green]Sync daemon stopped[/green]")
     except typer.Exit:
+        if _stop_sync_pid():
+            print("[green]Sync daemon stopped[/green]")
+            return
         print("Stop the daemon to apply disable:")
         print("- opencode-mem sync service stop")
         print("- or stop your foreground `opencode-mem sync daemon`")
