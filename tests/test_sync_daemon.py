@@ -1,0 +1,70 @@
+import threading
+from http.server import HTTPServer
+from pathlib import Path
+
+from opencode_mem.store import MemoryStore
+from opencode_mem.sync_api import build_sync_handler
+from opencode_mem.sync_daemon import sync_once
+from opencode_mem.sync_discovery import update_peer_addresses
+
+
+def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
+    handler = build_sync_handler(db_path)
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, int(server.server_address[1])
+
+
+def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        session_id = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        store_a.remember(session_id, kind="note", title="Omega", body_text="Omega body")
+        update_peer_addresses(store_a.conn, "peer-1", ["http://127.0.0.1:0"])
+    finally:
+        store_a.close()
+        store_b.close()
+
+    server, port = _start_server(tmp_path / "b.sqlite")
+    try:
+        store_a = MemoryStore(tmp_path / "a.sqlite")
+        try:
+            result = sync_once(store_a, "peer-1", [f"http://127.0.0.1:{port}"])
+            assert result["ok"] is True
+
+            cursor_row = store_a.conn.execute(
+                "SELECT last_acked_cursor FROM replication_cursors WHERE peer_device_id = ?",
+                ("peer-1",),
+            ).fetchone()
+            assert cursor_row is not None
+            assert cursor_row["last_acked_cursor"]
+
+            attempt = store_a.conn.execute(
+                "SELECT ok FROM sync_attempts WHERE peer_device_id = ?",
+                ("peer-1",),
+            ).fetchone()
+            assert attempt is not None
+            assert attempt["ok"] == 1
+        finally:
+            store_a.close()
+
+        store_b = MemoryStore(tmp_path / "b.sqlite")
+        try:
+            row = store_b.conn.execute(
+                "SELECT title FROM memory_items WHERE title = ?",
+                ("Omega",),
+            ).fetchone()
+            assert row is not None
+        finally:
+            store_b.close()
+    finally:
+        server.shutdown()

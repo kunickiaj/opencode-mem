@@ -112,6 +112,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             metadata_json TEXT,
+            deleted_at TEXT,
+            rev INTEGER DEFAULT 0,
             import_key TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_memory_items_active_created ON memory_items(active, created_at DESC);
@@ -238,6 +240,58 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);
         CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
         CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS replication_ops (
+            op_id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            op_type TEXT NOT NULL,
+            payload_json TEXT,
+            clock_rev INTEGER NOT NULL,
+            clock_updated_at TEXT NOT NULL,
+            clock_device_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_replication_ops_created ON replication_ops(created_at, op_id);
+        CREATE INDEX IF NOT EXISTS idx_replication_ops_entity ON replication_ops(entity_type, entity_id);
+
+        CREATE TABLE IF NOT EXISTS replication_cursors (
+            peer_device_id TEXT PRIMARY KEY,
+            last_applied_cursor TEXT,
+            last_acked_cursor TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_peers (
+            peer_device_id TEXT PRIMARY KEY,
+            name TEXT,
+            pinned_fingerprint TEXT,
+            addresses_json TEXT,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            last_sync_at TEXT,
+            last_error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_device (
+            device_id TEXT PRIMARY KEY,
+            public_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            peer_device_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            ok INTEGER NOT NULL,
+            ops_in INTEGER NOT NULL,
+            ops_out INTEGER NOT NULL,
+            error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_attempts_peer_started ON sync_attempts(peer_device_id, started_at);
         """
     )
     _ensure_column(conn, "sessions", "project", "TEXT")
@@ -250,6 +304,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "files_modified", "TEXT")
     _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
     _ensure_column(conn, "memory_items", "import_key", "TEXT")
+    _ensure_column(conn, "memory_items", "deleted_at", "TEXT")
+    _ensure_column(conn, "memory_items", "rev", "INTEGER")
     _ensure_column(conn, "user_prompts", "import_key", "TEXT")
     _ensure_column(conn, "session_summaries", "import_key", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "cwd", "TEXT")

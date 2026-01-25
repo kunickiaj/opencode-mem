@@ -14,6 +14,10 @@ CONFIG_ENV_OVERRIDES = {
     "observer_max_chars": "OPENCODE_MEM_OBSERVER_MAX_CHARS",
     "pack_observation_limit": "OPENCODE_MEM_PACK_OBSERVATION_LIMIT",
     "pack_session_limit": "OPENCODE_MEM_PACK_SESSION_LIMIT",
+    "sync_enabled": "OPENCODE_MEM_SYNC_ENABLED",
+    "sync_host": "OPENCODE_MEM_SYNC_HOST",
+    "sync_port": "OPENCODE_MEM_SYNC_PORT",
+    "sync_interval_s": "OPENCODE_MEM_SYNC_INTERVAL_S",
 }
 
 
@@ -76,6 +80,10 @@ class OpencodeMemConfig:
     viewer_port: int = 38888
     plugin_log: str | None = "~/.opencode-mem/plugin.log"
     plugin_cmd_timeout_ms: int = 1500
+    sync_enabled: bool = False
+    sync_host: str = "127.0.0.1"
+    sync_port: int = 7337
+    sync_interval_s: int = 120
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -144,4 +152,8 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.plugin_cmd_timeout_ms = int(
         os.getenv("OPENCODE_MEM_PLUGIN_CMD_TIMEOUT", cfg.plugin_cmd_timeout_ms)
     )
+    cfg.sync_enabled = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_ENABLED"), cfg.sync_enabled)
+    cfg.sync_host = os.getenv("OPENCODE_MEM_SYNC_HOST", cfg.sync_host)
+    cfg.sync_port = int(os.getenv("OPENCODE_MEM_SYNC_PORT", cfg.sync_port))
+    cfg.sync_interval_s = int(os.getenv("OPENCODE_MEM_SYNC_INTERVAL_S", cfg.sync_interval_s))
     return cfg
