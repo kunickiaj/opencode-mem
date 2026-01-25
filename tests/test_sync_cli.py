@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+import typer
 from typer.testing import CliRunner
 
 from opencode_mem import db, sync_identity
@@ -116,6 +117,20 @@ def test_sync_disable_stops_service(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["sync", "disable"], env=env)
     assert result.exit_code == 0
     assert called["stop"] == 1
+
+
+def test_sync_disable_stops_pid_when_no_service(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_enabled": True}) + "\n")
+    env = {"OPENCODE_MEM_CONFIG": str(config_path), "OPENCODE_MEM_SYNC_PID": str(tmp_path / "pid")}
+
+    def fake_run_service(action: str, *, user: bool, system: bool) -> None:
+        raise typer.Exit(code=1)
+
+    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
+    monkeypatch.setattr("opencode_mem.cli._stop_sync_pid", lambda: True)
+    result = runner.invoke(app, ["sync", "disable"], env=env)
+    assert result.exit_code == 0
 
 
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
