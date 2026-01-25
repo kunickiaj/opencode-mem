@@ -18,6 +18,7 @@ CONFIG_ENV_OVERRIDES = {
     "sync_host": "OPENCODE_MEM_SYNC_HOST",
     "sync_port": "OPENCODE_MEM_SYNC_PORT",
     "sync_interval_s": "OPENCODE_MEM_SYNC_INTERVAL_S",
+    "sync_mdns": "OPENCODE_MEM_SYNC_MDNS",
 }
 
 
@@ -84,6 +85,7 @@ class OpencodeMemConfig:
     sync_host: str = "127.0.0.1"
     sync_port: int = 7337
     sync_interval_s: int = 120
+    sync_mdns: bool = True
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -156,4 +158,5 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_host = os.getenv("OPENCODE_MEM_SYNC_HOST", cfg.sync_host)
     cfg.sync_port = int(os.getenv("OPENCODE_MEM_SYNC_PORT", cfg.sync_port))
     cfg.sync_interval_s = int(os.getenv("OPENCODE_MEM_SYNC_INTERVAL_S", cfg.sync_interval_s))
+    cfg.sync_mdns = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_MDNS"), cfg.sync_mdns)
     return cfg

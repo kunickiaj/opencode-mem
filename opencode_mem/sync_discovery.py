@@ -8,12 +8,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import db
+from .config import load_config
 
 DEFAULT_SERVICE_TYPE = "_opencode-mem._tcp.local."
 
 
 def mdns_enabled() -> bool:
-    return os.environ.get("OPENCODE_MEM_SYNC_MDNS", "1") not in {"0", "false", "off"}
+    config = load_config()
+    return config.sync_mdns
 
 
 def normalize_address(address: str) -> str:

@@ -5,6 +5,8 @@ from http.server import HTTPServer
 from pathlib import Path
 
 from opencode_mem import db
+from opencode_mem import sync_identity
+from opencode_mem.sync_identity import ensure_device_identity
 from opencode_mem.viewer import ViewerHandler
 
 
@@ -15,9 +17,16 @@ def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
     return server, int(server.server_address[1])
 
 
+def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
+    private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    private_key_path.write_text("private-key")
+    public_key_path.write_text("public-key")
+
+
 def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("OPENCODE_MEM_KEYS_DIR", str(tmp_path / "keys"))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -103,5 +112,31 @@ def test_sync_peers_rename(tmp_path: Path, monkeypatch) -> None:
         )
         resp = conn.getresponse()
         assert resp.status == 200
+    finally:
+        server.shutdown()
+
+
+def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("OPENCODE_MEM_KEYS_DIR", str(keys_dir))
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=keys_dir)
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/pairing")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("device_id")
+        assert payload.get("public_key")
     finally:
         server.shutdown()

@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -27,6 +28,7 @@ from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
 from .sync_daemon import sync_once
 from .sync_discovery import load_peer_addresses
+from .sync_identity import ensure_device_identity, load_public_key
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
@@ -234,6 +236,7 @@ VIEWER_HTML = """<!doctype html>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%231f6f5c'/%3E%3Cstop offset='100%25' style='stop-color:%23e67e4d'/%3E%3C/linearGradient%3E%3Cfilter id='shadow'%3E%3CfeDropShadow dx='0' dy='2' stdDeviation='3' flood-color='%23000' flood-opacity='0.5'/%3E%3C/filter%3E%3C/defs%3E%3Crect x='5' y='5' width='90' height='90' rx='16' fill='%23fff' stroke='%23000' stroke-width='3' filter='url(%23shadow)'/%3E%3Crect x='8' y='8' width='84' height='84' rx='14' fill='url(%23g1)'/%3E%3Cpath d='M20 75V25h15l15 25 15-25h15v50h-15V45l-15 22-15-22v30z' fill='white'/%3E%3C/svg%3E" />
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <style>
       :root {
         --bg: #f7f1e7;
@@ -638,6 +641,59 @@ VIEWER_HTML = """<!doctype html>
         gap: 6px;
         font-size: 0.85rem;
         color: var(--muted);
+      }
+      .pairing-card {
+        margin-top: 14px;
+        border: 1px dashed rgba(25, 24, 23, 0.2);
+        border-radius: 16px;
+        padding: 14px 16px;
+        display: grid;
+        gap: 10px;
+        background: rgba(255, 250, 243, 0.7);
+      }
+      [data-theme="dark"] .pairing-card {
+        border-color: rgba(255, 255, 255, 0.12);
+        background: rgba(20, 24, 28, 0.6);
+      }
+      .pairing-body {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1.4fr 1fr;
+        align-items: start;
+      }
+      .pairing-body pre {
+        margin: 0;
+        font-size: 12px;
+        background: rgba(0, 0, 0, 0.04);
+        padding: 10px;
+        border-radius: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      [data-theme="dark"] .pairing-body pre {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .pairing-qr {
+        width: 160px;
+        height: 160px;
+        border-radius: 12px;
+        border: 1px solid rgba(25, 24, 23, 0.12);
+        background: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .pairing-qr img {
+        width: 140px;
+        height: 140px;
+      }
+      @media (max-width: 900px) {
+        .pairing-body {
+          grid-template-columns: 1fr;
+        }
+        .pairing-qr {
+          justify-self: start;
+        }
       }
       .section-meta .badge {
         background: rgba(31, 111, 92, 0.12);
@@ -1171,6 +1227,30 @@ VIEWER_HTML = """<!doctype html>
             <input id="packSessionLimit" type="number" min="1" />
             <div class="small">Default number of session summaries to include in a pack.</div>
           </div>
+          <div class="field">
+            <label>Sync settings</label>
+            <div class="small">Configure peer sync. Environment variables override these values.</div>
+          </div>
+          <div class="field">
+            <label for="syncEnabled">Sync enabled</label>
+            <input id="syncEnabled" type="checkbox" />
+          </div>
+          <div class="field">
+            <label for="syncHost">Sync host</label>
+            <input id="syncHost" placeholder="127.0.0.1" />
+          </div>
+          <div class="field">
+            <label for="syncPort">Sync port</label>
+            <input id="syncPort" type="number" min="1" />
+          </div>
+          <div class="field">
+            <label for="syncInterval">Sync interval (seconds)</label>
+            <input id="syncInterval" type="number" min="10" />
+          </div>
+          <div class="field">
+            <label for="syncMdns">mDNS discovery</label>
+            <input id="syncMdns" type="checkbox" />
+          </div>
           <div class="small mono" id="settingsPath"></div>
           <div class="small" id="settingsEffective"></div>
           <div class="settings-note" id="settingsOverrides">Environment variables override file settings.</div>
@@ -1204,6 +1284,19 @@ VIEWER_HTML = """<!doctype html>
         <div class="grid-2" id="syncStatusGrid"></div>
         <div class="peer-list" id="syncPeers"></div>
         <div class="attempts-list" id="syncAttempts"></div>
+        <div class="pairing-card" id="syncPairing">
+          <div class="peer-title">
+            <strong>Pairing payload</strong>
+            <div class="peer-actions">
+              <button id="pairingCopy">Copy</button>
+            </div>
+          </div>
+          <div class="pairing-body">
+            <pre id="pairingPayload">Loading…</pre>
+            <div class="pairing-qr" id="pairingQr"></div>
+          </div>
+          <div class="peer-meta" id="pairingHint">Scan or copy the payload to pair a device.</div>
+        </div>
       </section>
       <section style="animation-delay: 0.06s;">
         <div class="section-header">
@@ -1258,6 +1351,11 @@ VIEWER_HTML = """<!doctype html>
       const observerMaxCharsHint = document.getElementById("observerMaxCharsHint");
       const packObservationLimitInput = document.getElementById("packObservationLimit");
       const packSessionLimitInput = document.getElementById("packSessionLimit");
+      const syncEnabledInput = document.getElementById("syncEnabled");
+      const syncHostInput = document.getElementById("syncHost");
+      const syncPortInput = document.getElementById("syncPort");
+      const syncIntervalInput = document.getElementById("syncInterval");
+      const syncMdnsInput = document.getElementById("syncMdns");
       const projectFilter = document.getElementById("projectFilter");
       const themeToggle = document.getElementById("themeToggle");
       const syncMeta = document.getElementById("syncMeta");
@@ -1265,6 +1363,10 @@ VIEWER_HTML = """<!doctype html>
       const syncPeers = document.getElementById("syncPeers");
       const syncAttempts = document.getElementById("syncAttempts");
       const syncNowButton = document.getElementById("syncNowButton");
+      const pairingPayload = document.getElementById("pairingPayload");
+      const pairingCopy = document.getElementById("pairingCopy");
+      const pairingQr = document.getElementById("pairingQr");
+      const pairingHint = document.getElementById("pairingHint");
 
       let configDefaults = {};
       let configPath = "";
@@ -1635,6 +1737,47 @@ VIEWER_HTML = """<!doctype html>
           const label = `${attempt.peer_device_id} · ${attempt.ok ? "ok" : "error"} · ${formatTimestamp(attempt.finished_at)}`;
           syncAttempts.appendChild(createElement("div", "peer-meta", label));
         });
+      }
+
+      async function renderPairing(payload) {
+        if (!pairingPayload || !pairingQr) return;
+        if (!payload || typeof payload !== "object") {
+          pairingPayload.textContent = "Pairing payload unavailable";
+          pairingQr.textContent = "";
+          if (pairingHint) pairingHint.textContent = "Generate a device identity first.";
+          return;
+        }
+        const text = JSON.stringify(payload);
+        pairingPayload.textContent = text;
+        if (pairingHint) pairingHint.textContent = "Scan or copy the payload to pair a device.";
+        if (typeof QRCode === "undefined") {
+          pairingQr.textContent = "QR unavailable";
+          return;
+        }
+        try {
+          const dataUrl = await QRCode.toDataURL(text, { width: 160, margin: 1 });
+          pairingQr.textContent = "";
+          const img = document.createElement("img");
+          img.src = dataUrl;
+          img.alt = "Sync pairing QR";
+          pairingQr.appendChild(img);
+        } catch (err) {
+          pairingQr.textContent = "QR unavailable";
+        }
+      }
+
+      async function loadPairing() {
+        try {
+          const response = await fetch("/api/sync/pairing");
+          const data = await response.json();
+          if (!response.ok) {
+            renderPairing(null);
+            return;
+          }
+          await renderPairing(data);
+        } catch (err) {
+          renderPairing(null);
+        }
       }
 
       function renderList(el, rows, formatter) {
@@ -2053,9 +2196,28 @@ VIEWER_HTML = """<!doctype html>
           const defaultMax = configDefaults.observer_max_chars ?? 12000;
           const defaultPackObservationLimit = configDefaults.pack_observation_limit ?? 50;
           const defaultPackSessionLimit = configDefaults.pack_session_limit ?? 10;
+          const defaultSyncHost = configDefaults.sync_host ?? "127.0.0.1";
+          const defaultSyncPort = configDefaults.sync_port ?? 7337;
+          const defaultSyncInterval = configDefaults.sync_interval_s ?? 120;
+          const defaultSyncMdns = configDefaults.sync_mdns ?? true;
           observerMaxCharsInput.value = config.observer_max_chars ?? defaultMax;
           packObservationLimitInput.value = config.pack_observation_limit ?? defaultPackObservationLimit;
           packSessionLimitInput.value = config.pack_session_limit ?? defaultPackSessionLimit;
+          if (syncEnabledInput) {
+            syncEnabledInput.checked = config.sync_enabled ?? false;
+          }
+          if (syncHostInput) {
+            syncHostInput.value = config.sync_host ?? defaultSyncHost;
+          }
+          if (syncPortInput) {
+            syncPortInput.value = config.sync_port ?? defaultSyncPort;
+          }
+          if (syncIntervalInput) {
+            syncIntervalInput.value = config.sync_interval_s ?? defaultSyncInterval;
+          }
+          if (syncMdnsInput) {
+            syncMdnsInput.checked = config.sync_mdns ?? defaultSyncMdns;
+          }
           observerMaxCharsHint.textContent = `Default: ${defaultMax.toLocaleString()} characters.`;
           settingsPath.textContent = configPath ? `config: ${configPath}` : "config path unavailable";
           const effectiveProvider = effective.observer_provider || "auto";
@@ -2081,6 +2243,9 @@ VIEWER_HTML = """<!doctype html>
         const maxValue = observerMaxCharsInput.value.trim();
         const packObservationValue = packObservationLimitInput.value.trim();
         const packSessionValue = packSessionLimitInput.value.trim();
+        const syncHostValue = syncHostInput?.value.trim() || "";
+        const syncPortValue = syncPortInput?.value.trim() || "";
+        const syncIntervalValue = syncIntervalInput?.value.trim() || "";
         let maxChars = null;
         if (maxValue) {
           maxChars = Number(maxValue);
@@ -2108,6 +2273,24 @@ VIEWER_HTML = """<!doctype html>
             return;
           }
         }
+        let syncPort = null;
+        if (syncPortValue) {
+          syncPort = Number(syncPortValue);
+          if (!Number.isInteger(syncPort) || syncPort <= 0) {
+            settingsStatus.textContent = "Sync port must be a positive integer";
+            settingsSave.disabled = false;
+            return;
+          }
+        }
+        let syncInterval = null;
+        if (syncIntervalValue) {
+          syncInterval = Number(syncIntervalValue);
+          if (!Number.isInteger(syncInterval) || syncInterval <= 0) {
+            settingsStatus.textContent = "Sync interval must be a positive integer";
+            settingsSave.disabled = false;
+            return;
+          }
+        }
         const payload = {
           config: {
             observer_provider: provider || null,
@@ -2115,6 +2298,11 @@ VIEWER_HTML = """<!doctype html>
             observer_max_chars: maxChars,
             pack_observation_limit: packObservationLimit,
             pack_session_limit: packSessionLimit,
+            sync_enabled: syncEnabledInput ? syncEnabledInput.checked : null,
+            sync_host: syncHostValue || null,
+            sync_port: syncPort,
+            sync_interval_s: syncInterval,
+            sync_mdns: syncMdnsInput ? syncMdnsInput.checked : null,
           },
         };
         settingsStatus.textContent = "Saving…";
@@ -2185,6 +2373,16 @@ VIEWER_HTML = """<!doctype html>
       });
 
       syncNowButton?.addEventListener("click", () => syncPeerNow());
+      pairingCopy?.addEventListener("click", async () => {
+        const text = pairingPayload?.textContent || "";
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          if (pairingHint) pairingHint.textContent = "Copied pairing payload.";
+        } catch (err) {
+          if (pairingHint) pairingHint.textContent = "Copy failed.";
+        }
+      });
 
       async function refresh() {
         refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
@@ -2205,6 +2403,7 @@ VIEWER_HTML = """<!doctype html>
           renderSyncStatus(syncStatus);
           renderSyncPeers(syncPeersData.items || []);
           renderSyncAttempts(syncAttemptsData.items || []);
+          loadPairing();
 
           if (isDiagnosticsOpen()) {
             try {
@@ -2492,6 +2691,31 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     (limit,),
                 ).fetchall()
                 self._send_json({"items": [dict(row) for row in rows]})
+                return
+            if parsed.path == "/api/sync/pairing":
+                config = load_config()
+                keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
+                keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
+                device_row = store.conn.execute(
+                    "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"
+                ).fetchone()
+                if device_row:
+                    device_id = device_row["device_id"]
+                    public_key = device_row["public_key"]
+                    fingerprint = device_row["fingerprint"]
+                else:
+                    device_id, fingerprint = ensure_device_identity(store.conn, keys_dir=keys_dir)
+                    public_key = load_public_key(keys_dir)
+                if not public_key or not device_id or not fingerprint:
+                    self._send_json({"error": "public key missing"}, status=500)
+                    return
+                payload = {
+                    "device_id": device_id,
+                    "fingerprint": fingerprint,
+                    "public_key": public_key,
+                    "address": f"{config.sync_host}:{config.sync_port}",
+                }
+                self._send_json(payload)
                 return
             self.send_response(404)
             self.end_headers()
@@ -2791,6 +3015,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             "observer_max_chars",
             "pack_observation_limit",
             "pack_session_limit",
+            "sync_enabled",
+            "sync_host",
+            "sync_port",
+            "sync_interval_s",
+            "sync_mdns",
         }
         allowed_providers = set(_load_provider_options())
         config_path = get_config_path()
@@ -2841,6 +3070,33 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 config_data[key] = value
                 continue
             if key in {"pack_observation_limit", "pack_session_limit"}:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    self._send_json({"error": f"{key} must be int"}, status=400)
+                    return
+                if value <= 0:
+                    self._send_json({"error": f"{key} must be positive"}, status=400)
+                    return
+                config_data[key] = value
+                continue
+            if key in {"sync_enabled", "sync_mdns"}:
+                if not isinstance(value, bool):
+                    self._send_json({"error": f"{key} must be boolean"}, status=400)
+                    return
+                config_data[key] = value
+                continue
+            if key == "sync_host":
+                if not isinstance(value, str):
+                    self._send_json({"error": "sync_host must be string"}, status=400)
+                    return
+                host_value = value.strip()
+                if not host_value:
+                    config_data.pop(key, None)
+                    continue
+                config_data[key] = host_value
+                continue
+            if key in {"sync_port", "sync_interval_s"}:
                 try:
                     value = int(value)
                 except (TypeError, ValueError):
