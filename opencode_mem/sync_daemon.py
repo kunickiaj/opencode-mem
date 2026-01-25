@@ -17,6 +17,7 @@ from .store import MemoryStore, ReplicationOp
 from .sync_api import build_sync_handler
 from .sync_auth import build_auth_headers
 from .sync_discovery import (
+    advertise_mdns,
     discover_peers_via_mdns,
     load_peer_addresses,
     mdns_addresses_for_peer,
@@ -282,6 +283,14 @@ def run_sync_daemon(
     server = Server((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    zeroconf = None
+    if mdns_enabled():
+        store = MemoryStore(db_path or db.DEFAULT_DB_PATH)
+        try:
+            device_id, _ = ensure_device_identity(store.conn)
+        finally:
+            store.close()
+        zeroconf = advertise_mdns(device_id=device_id, port=port)
     stop = stop_event or threading.Event()
     try:
         while not stop.wait(interval_s):
@@ -292,3 +301,6 @@ def run_sync_daemon(
                 store.close()
     finally:
         server.shutdown()
+        if zeroconf is not None:
+            with contextlib.suppress(Exception):
+                zeroconf.close()

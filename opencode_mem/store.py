@@ -325,7 +325,12 @@ class MemoryStore:
             clock = self._clock_from_payload(payload)
             import_key = str(payload.get("import_key") or "")
             if not import_key:
-                continue
+                import_key = f"legacy:memory_item:{row['id']}"
+                self.conn.execute(
+                    "UPDATE memory_items SET import_key = ? WHERE id = ?",
+                    (import_key, row["id"]),
+                )
+                self.conn.commit()
             op_type = (
                 "delete"
                 if payload.get("deleted_at") or int(payload.get("active") or 1) == 0
