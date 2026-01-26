@@ -466,6 +466,88 @@ def test_repair_legacy_import_keys_merges_old_and_new(tmp_path: Path) -> None:
         store.close()
 
 
+def test_repair_legacy_import_keys_prefers_existing_new_key(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-b", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store.conn.commit()
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-b",
+        )
+        now = "2026-01-01T00:00:00Z"
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, confidence, tags_text, active,
+                created_at, updated_at, metadata_json, prompt_number, import_key, deleted_at, rev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session,
+                "note",
+                "Dup",
+                "Same",
+                0.5,
+                "",
+                1,
+                now,
+                now,
+                json.dumps({"clock_device_id": "local"}),
+                1,
+                "legacy:memory_item:1",
+                None,
+                1,
+            ),
+        )
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, confidence, tags_text, active,
+                created_at, updated_at, metadata_json, prompt_number, import_key, deleted_at, rev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session,
+                "note",
+                "Dup",
+                "Same",
+                0.5,
+                "",
+                1,
+                now,
+                now,
+                json.dumps({"clock_device_id": "dev-a"}),
+                1,
+                "legacy:dev-a:memory_item:1",
+                None,
+                1,
+            ),
+        )
+        store.conn.commit()
+
+        dry = store.repair_legacy_import_keys(dry_run=True)
+        assert dry["merged"] == 1
+        assert dry["renamed"] == 0
+
+        applied = store.repair_legacy_import_keys()
+        assert applied["merged"] == 1
+        assert applied["tombstoned"] == 1
+        count = store.conn.execute(
+            "SELECT COUNT(*) AS c FROM memory_items WHERE active = 1"
+        ).fetchone()["c"]
+        assert int(count) == 1
+    finally:
+        store.close()
+
+
 def test_apply_replication_ops_upsert_aliases_legacy_keys(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
