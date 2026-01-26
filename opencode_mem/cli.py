@@ -16,7 +16,7 @@ from typing import Any
 import typer
 from rich import print
 
-from . import db
+from . import __version__, db
 from .config import get_config_path, load_config, read_config_file, write_config_file
 from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
@@ -40,6 +40,35 @@ sync_service_app = typer.Typer(help="Manage sync service")
 app.add_typer(sync_app, name="sync")
 sync_app.add_typer(sync_peers_app, name="peers")
 sync_app.add_typer(sync_service_app, name="service")
+
+
+@sync_app.command("attempts")
+def sync_attempts(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int = typer.Option(10, help="Number of attempts to show"),
+) -> None:
+    """Show recent sync attempts."""
+
+    store = _store(db_path)
+    try:
+        rows = store.conn.execute(
+            """
+            SELECT peer_device_id, ok, ops_in, ops_out, error, finished_at
+            FROM sync_attempts
+            ORDER BY finished_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    finally:
+        store.close()
+    for row in rows:
+        status = "ok" if int(row["ok"] or 0) else "error"
+        error = str(row["error"] or "")
+        suffix = f" | {error}" if error else ""
+        print(
+            f"{row['peer_device_id']}|{status}|in={int(row['ops_in'] or 0)}|out={int(row['ops_out'] or 0)}|{row['finished_at']}{suffix}"
+        )
 
 
 def _store(db_path: str | None) -> MemoryStore:
@@ -2656,3 +2685,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@app.command("version")
+def version() -> None:
+    """Print version."""
+
+    print(__version__)
