@@ -391,12 +391,30 @@ class MemoryStore:
             current = str(row["import_key"] or "").strip()
             metadata = self._normalize_metadata(row["metadata_json"])
             clock_device_id = str(metadata.get("clock_device_id") or "").strip()
-            canonical = self._canonical_legacy_import_key(
-                current,
-                clock_device_id=clock_device_id,
-                local_device_id=local_device_id,
-                memory_id=memory_id,
-            )
+
+            canonical = None
+            suffix = self._legacy_import_key_suffix(current)
+            if suffix and LEGACY_IMPORT_KEY_OLD_RE.match(current):
+                # Prefer any existing new-format key for the same suffix.
+                picked = self.conn.execute(
+                    """
+                    SELECT id, import_key
+                    FROM memory_items
+                    WHERE import_key LIKE ?
+                    ORDER BY active DESC, updated_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (f"legacy:%:memory_item:{suffix}",),
+                ).fetchone()
+                if picked is not None:
+                    canonical = str(picked["import_key"] or "").strip() or None
+            if canonical is None:
+                canonical = self._canonical_legacy_import_key(
+                    current,
+                    clock_device_id=clock_device_id,
+                    local_device_id=local_device_id,
+                    memory_id=memory_id,
+                )
             if not canonical or canonical == current:
                 stats["skipped"] += 1
                 continue
