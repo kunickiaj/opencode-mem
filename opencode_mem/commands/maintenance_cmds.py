@@ -129,6 +129,105 @@ def backfill_tags_cmd(
     print(f"Checked {result['checked']} memories")
 
 
+def pack_stats_cmd(
+    *,
+    store_from_path,
+    resolve_project,
+    db_path: str | None,
+    project: str | None,
+    all_projects: bool,
+    limit: int = 50,
+) -> None:
+    """Analyze pack generation statistics (semantic usage, token savings)."""
+    import json
+    from collections import defaultdict
+    import statistics
+
+    store = store_from_path(db_path)
+    try:
+        resolved_project = resolve_project(os.getcwd(), project, all_projects=all_projects)
+
+        print(f"[bold]Pack Stats[/bold] (limit {limit} recent packs)")
+        if resolved_project:
+            print(f"Project: {resolved_project}")
+
+        # Fetch usage events
+        query = "SELECT metadata_json, created_at FROM usage_events WHERE event = 'pack' ORDER BY created_at DESC LIMIT ?"
+        rows = store.conn.execute(query, (limit,)).fetchall()
+
+        if not rows:
+            print("[yellow]No pack events found.[/yellow]")
+            return
+
+        stats = {
+            "total_packs": 0,
+            "semantic_candidates_total": 0,
+            "semantic_hits_total": 0,
+            "semantic_zero_count": 0,
+            "tokens_saved": [],
+            "pack_tokens": [],
+            "fallback_counts": defaultdict(int),
+        }
+
+        for row in rows:
+            try:
+                meta = json.loads(row["metadata_json"])
+            except (ValueError, TypeError):
+                continue
+
+            # Filter by project if needed
+            pack_project = meta.get("project")
+            print(f"DEBUG: pack_project={repr(pack_project)} resolved={repr(resolved_project)}")
+            if resolved_project and pack_project != resolved_project:
+                continue
+
+            stats["total_packs"] += 1
+            cand = meta.get("semantic_candidates", 0)
+            hits = meta.get("semantic_hits", 0)
+
+            stats["semantic_candidates_total"] += cand
+            stats["semantic_hits_total"] += hits
+            if cand == 0:
+                stats["semantic_zero_count"] += 1
+
+            stats["tokens_saved"].append(meta.get("tokens_saved", 0))
+            stats["pack_tokens"].append(
+                meta.get("token_budget", 0) or 0
+            )  # Use budget or pack_tokens
+
+            fallback = meta.get("fallback")
+            if fallback:
+                stats["fallback_counts"][fallback] += 1
+
+        if stats["total_packs"] == 0:
+            print(f"[yellow]No packs found for project {resolved_project}[/yellow]")
+            return
+
+        avg_candidates = stats["semantic_candidates_total"] / stats["total_packs"]
+        avg_hits = stats["semantic_hits_total"] / stats["total_packs"]
+        avg_saved = statistics.mean(stats["tokens_saved"]) if stats["tokens_saved"] else 0
+
+        print(f"\n[bold]Semantic Retrieval[/bold]")
+        print(f"- Avg Candidates: {avg_candidates:.1f}")
+        print(f"- Avg Hits (included): {avg_hits:.1f}")
+        print(
+            f"- Zero-candidate packs: {stats['semantic_zero_count']} ({stats['semantic_zero_count'] / stats['total_packs'] * 100:.1f}%)"
+        )
+
+        print(f"\n[bold]Fallbacks[/bold]")
+        if stats["fallback_counts"]:
+            for k, v in stats["fallback_counts"].items():
+                print(f"- {k}: {v}")
+        else:
+            print("- None")
+
+        print(f"\n[bold]Tokens[/bold]")
+        print(f"- Avg Saved: {avg_saved:,.0f}")
+
+    finally:
+        store.close()
+
+
 def backfill_discovery_tokens_cmd(
     *, store_from_path, db_path: str | None, limit_sessions: int
 ) -> None:

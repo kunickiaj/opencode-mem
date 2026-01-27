@@ -23,12 +23,12 @@ from .commands.maintenance_cmds import (
     backfill_discovery_tokens_cmd,
     backfill_tags_cmd,
     embed_cmd,
-    ingest_cmd,
     init_db_cmd,
-    mcp_cmd,
     pack_benchmark_cmd,
+    pack_stats_cmd,
     stats_cmd,
 )
+
 from .commands.memory_cmds import (
     compact_cmd,
     forget_cmd,
@@ -421,7 +421,26 @@ def compact(
 
 @app.command()
 def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """Show database statistics."""
     stats_cmd(store_from_path=_store, db_path=db_path)
+
+
+@app.command("pack-stats")
+def pack_stats(
+    project: str | None = typer.Option(None, help="Filter by project"),
+    all_projects: bool = typer.Option(False, "--all-projects", help="Include all projects"),
+    limit: int = typer.Option(50, help="Number of recent packs to analyze"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Analyze pack generation statistics."""
+    pack_stats_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
+        project=project,
+        all_projects=all_projects,
+        limit=limit,
+    )
 
 
 @app.command()

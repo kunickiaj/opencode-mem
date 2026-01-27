@@ -3966,37 +3966,72 @@ class MemoryStore:
         log_usage: bool = True,
     ) -> dict[str, Any]:
         fallback_used = False
-        merge_results = False
+        merge_results = True  # Always merge semantic results for better recall
         recall_mode = False
+
+        # Telemetry collection
+        telemetry_sources = {"semantic": 0, "fts": 0, "fuzzy": 0, "timeline": 0}
+        telemetry_candidates = {"semantic": 0, "fts": 0, "fuzzy": 0}
+
+        # 1. Always attempt semantic search first (independent of mode)
+        semantic_matches = []
+        try:
+            semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
+            telemetry_candidates["semantic"] = len(semantic_matches)
+        except Exception:
+            pass
+
         if self._query_looks_like_tasks(context):
             matches = self.search(
                 self._task_query_hint(), limit=limit, filters=filters, log_usage=False
             )
-            list(matches)
+            telemetry_candidates["fts"] = len(matches)
+
+            # Convert matches to dicts/objects as needed
+            matches = list(matches)
+
+            # Combine semantic results if available
+            if semantic_matches:
+                # Add semantic matches to the candidate pool
+                # Note: We'll use _merge_ranked_results later to dedupe and rank
+                # But here we want to ensure they are included in the filtering pipeline
+                matches.extend(semantic_matches)
+
             if not matches:
-                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
-                if semantic_matches:
-                    matches = semantic_matches
-                    list(matches)
+                # If STILL no matches (no FTS, no Semantic), try Fuzzy
+                fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
+                telemetry_candidates["fuzzy"] = len(fuzzy_matches)
+                if fuzzy_matches:
+                    matches = fuzzy_matches
                     fallback_used = True
                 else:
-                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
-                    if fuzzy_matches:
-                        matches = fuzzy_matches
-                        list(matches)
-                        fallback_used = True
-                    else:
-                        matches = self._task_fallback_recent(limit, filters)
-                        list(matches)
-                        fallback_used = True
+                    matches = self._task_fallback_recent(limit, filters)
+                    fallback_used = True
             else:
-                recent_matches = self._filter_recent_results(list(matches), self.TASK_RECENCY_DAYS)
+                # Apply task-specific filtering (Recency)
+                # But allow semantic matches to bypass recency if they are high quality?
+                # For now, let's keep the recency filter but maybe relax it for semantic?
+                # Actually, filtering strictly by recency might kill good semantic hits.
+                # Let's trust the ranker later.
+                pass
+
+            # If we have matches, prioritize them using task logic
+            if matches:
+                # Convert all to dicts for consistency before prioritization
+                match_dicts = [m.__dict__ if isinstance(m, MemoryResult) else m for m in matches]
+
+                # Apply recency filter (maybe looser?)
+                # original logic: recent_matches = self._filter_recent_results(list(matches), self.TASK_RECENCY_DAYS)
+                # Let's apply it but maybe keep top semantic hits regardless of age?
+                # For simplicity/safety, we stick to the existing recency bias but ensure semantic items are *candidates*
+                recent_matches = self._filter_recent_results(match_dicts, self.TASK_RECENCY_DAYS)
+
                 if recent_matches:
-                    matches = self._prioritize_task_results(
-                        [m.__dict__ if isinstance(m, MemoryResult) else m for m in recent_matches],
-                        limit,
-                    )
-                    list(recent_matches)
+                    matches = self._prioritize_task_results(recent_matches, limit)
+                else:
+                    # If recency killed everything, fall back to whatever we had (semantic might be old but relevant)
+                    matches = self._prioritize_task_results(match_dicts, limit)
+
         elif self._query_looks_like_recall(context):
             recall_mode = True
             recall_filters = dict(filters or {})
@@ -4007,62 +4042,63 @@ class MemoryStore:
                 filters=recall_filters,
                 log_usage=False,
             )
-            list(matches)
+            telemetry_candidates["fts"] = len(matches)
+            matches = list(matches)
+
+            if semantic_matches:
+                matches.extend(semantic_matches)
+
             if not matches:
-                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
-                if semantic_matches:
-                    matches = semantic_matches
-                    list(matches)
+                fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
+                telemetry_candidates["fuzzy"] = len(fuzzy_matches)
+                if fuzzy_matches:
+                    matches = fuzzy_matches
                     fallback_used = True
                 else:
-                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
-                    if fuzzy_matches:
-                        matches = fuzzy_matches
-                        list(matches)
-                        fallback_used = True
-                    else:
-                        matches = self._recall_fallback_recent(limit, filters)
-                        list(matches)
-                        fallback_used = True
-            else:
-                recent_matches = self._filter_recent_results(
-                    list(matches), self.RECALL_RECENCY_DAYS
-                )
-                if recent_matches:
-                    matches = self._prioritize_recall_results(list(recent_matches), limit)
-                    list(recent_matches)
+                    matches = self._recall_fallback_recent(limit, filters)
+                    fallback_used = True
+
+            # Prioritize recall results
+            if matches:
+                match_dicts = [m.__dict__ if isinstance(m, MemoryResult) else m for m in matches]
+                matches = self._prioritize_recall_results(match_dicts, limit)
+
+            # Timeline expansion for recall
             if matches:
                 depth_before = max(0, limit // 2)
                 depth_after = max(0, limit - depth_before - 1)
                 timeline = self._timeline_around(matches[0], depth_before, depth_after, filters)
                 if timeline:
                     matches = timeline
-                    list(matches)
+                    telemetry_sources["timeline"] = len(timeline)
+
         else:
+            # Default search
             matches = self.search(context, limit=limit, filters=filters, log_usage=False)
-            list(matches)
-            if not matches:
-                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
-                if semantic_matches:
-                    matches = semantic_matches
-                    list(matches)
+            telemetry_candidates["fts"] = len(matches)
+            matches = list(matches)
+
+            if not matches and not semantic_matches:
+                fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
+                telemetry_candidates["fuzzy"] = len(fuzzy_matches)
+                if fuzzy_matches:
+                    matches = fuzzy_matches
                     fallback_used = True
-                else:
-                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
-                    if fuzzy_matches:
-                        matches = fuzzy_matches
-                        list(matches)
-                        fallback_used = True
             elif matches:
                 matches = self._rerank_results(
                     list(matches), limit=limit, recency_days=self.RECALL_RECENCY_DAYS
                 )
-                list(matches)
-            merge_results = True
 
-        semantic_candidates = 0
+        semantic_candidates = len(semantic_matches)
+
+        # Merge Results (Semantic + FTS + etc)
+        # This function deduplicates and reranks
+        # We pass `matches` (which now might contain mixed items) + `context`
+        # Note: _merge_ranked_results will re-run semantic search if we don't handle it carefully,
+        # but it's designed to merge explicit results with semantic results.
+        # Since we already added semantic_matches to `matches` in some branches, we should be careful of dups.
+        # But `_merge_ranked_results` handles deduping by ID.
         if merge_results:
-            semantic_candidates = len(self._semantic_search(context, limit=limit, filters=filters))
             matches = self._merge_ranked_results(matches, context, limit, filters)
 
         def get_metadata(item: MemoryResult | dict[str, Any]) -> dict[str, Any]:
