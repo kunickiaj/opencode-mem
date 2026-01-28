@@ -180,21 +180,13 @@ def build_sync_handler(db_path: Path | None = None):
                         limit=limit,
                         device_id=store.device_id,
                     )
-                    ops, next_cursor, blocked = store.filter_replication_ops_for_sync_with_status(
+                    ops, next_cursor, skipped = store.filter_replication_ops_for_sync_with_status(
                         ops,
                         peer_device_id=peer_device_id or None,
                     )
                     payload: dict[str, Any] = {"ops": ops, "next_cursor": next_cursor}
-                    if blocked is not None and not ops:
-                        payload["blocked"] = True
-                        payload["blocked_reason"] = blocked.get("reason")
-                        payload["blocked_op"] = {
-                            "op_id": blocked.get("op_id"),
-                            "created_at": blocked.get("created_at"),
-                            "entity_type": blocked.get("entity_type"),
-                            "entity_id": blocked.get("entity_id"),
-                            "project": blocked.get("project"),
-                        }
+                    if skipped is not None:
+                        payload["skipped"] = skipped.get("skipped_count", 0)
                     _send_json(self, payload)
                 finally:
                     store.close()

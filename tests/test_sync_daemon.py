@@ -299,7 +299,7 @@ def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) 
         store.close()
 
 
-def test_sync_once_returns_error_when_peer_is_blocked(monkeypatch, tmp_path: Path) -> None:
+def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
         store.conn.execute(
@@ -324,18 +324,15 @@ def test_sync_once_returns_error_when_peer_is_blocked(monkeypatch, tmp_path: Pat
                 return 200, {
                     "ops": [],
                     "next_cursor": None,
-                    "blocked": True,
-                    "blocked_reason": "project_filter",
-                    "blocked_op": {"op_id": "op-2", "project": "(missing)"},
+                    "skipped": 2,
                 }
-            raise AssertionError(f"unexpected request: {method} {url}")
+            return 200, {"inserted": 0, "updated": 0}
 
         monkeypatch.setattr(sync_daemon, "_request_json", fake_request_json)
 
         result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
-        assert result["ok"] is False
-        assert "blocked" in str(result.get("error") or "")
-        assert "op-2" in str(result.get("error") or "")
+        assert result["ok"] is True
+        assert result["ops_in"] == 0
     finally:
         store.close()
 

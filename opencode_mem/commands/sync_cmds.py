@@ -515,7 +515,7 @@ def sync_doctor_cmd(
 
     store = store_from_path(db_path)
     unknown_project_ops = 0
-    blocked_outbound: dict[str, dict[str, Any]] = {}
+    skipped_outbound: dict[str, dict[str, Any]] = {}
     try:
         device = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
         daemon_state = store.get_sync_daemon_state() or {}
@@ -546,11 +546,11 @@ def sync_doctor_cmd(
                     limit=200,
                     device_id=store.device_id,
                 )
-                _allowed, _next, blocked = store.filter_replication_ops_for_sync_with_status(
+                _allowed, _next, skipped = store.filter_replication_ops_for_sync_with_status(
                     outbound_ops, peer_device_id=peer_device_id
                 )
-                if blocked is not None:
-                    blocked_outbound[peer_device_id] = blocked
+                if skipped is not None:
+                    skipped_outbound[peer_device_id] = skipped
     finally:
         store.close()
 
@@ -601,19 +601,18 @@ def sync_doctor_cmd(
                 reach = "ok" if port_open(host, int(port_str)) else "unreachable"
             except Exception:
                 reach = "invalid address"
-        blocked = blocked_outbound.get(str(peer_row["peer_device_id"]))
-        blocked_suffix = ""
-        if blocked is not None:
-            project_value = blocked.get("project")
+        skipped = skipped_outbound.get(str(peer_row["peer_device_id"]))
+        skipped_suffix = ""
+        if skipped is not None:
+            skip_count = skipped.get("skipped_count", 0)
+            project_value = skipped.get("project")
             project_label = (
                 project_value if isinstance(project_value, str) and project_value else "(missing)"
             )
-            blocked_suffix = f" outbound_blocked={blocked.get('op_id')} project={project_label}"
+            skipped_suffix = f" outbound_skipped={skip_count} first_project={project_label}"
         print(
-            f"  - {peer_row['peer_device_id']}: addresses={len(addresses)} reach={reach} pinned={pinned} public_key={has_key}{blocked_suffix}"
+            f"  - {peer_row['peer_device_id']}: addresses={len(addresses)} reach={reach} pinned={pinned} public_key={has_key}{skipped_suffix}"
         )
-        if blocked is not None:
-            issues.append(f"peer {peer_row['peer_device_id']} outbound blocked")
         if reach != "ok":
             issues.append(f"peer {peer_row['peer_device_id']} unreachable")
         if not pinned or not has_key:

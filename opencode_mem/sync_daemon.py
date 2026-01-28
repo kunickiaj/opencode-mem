@@ -247,18 +247,6 @@ def sync_once(
                 detail = payload.get("error") if isinstance(payload, dict) else None
                 suffix = f" ({status}: {detail})" if detail else f" ({status})"
                 raise RuntimeError(f"peer ops fetch failed{suffix}")
-            if payload.get("blocked") is True:
-                blocked_op = payload.get("blocked_op")
-                op_id = ""
-                project = ""
-                if isinstance(blocked_op, dict):
-                    op_id = str(blocked_op.get("op_id") or "")
-                    project = str(blocked_op.get("project") or "")
-                reason = str(payload.get("blocked_reason") or "blocked")
-                suffix = f" op={op_id}" if op_id else ""
-                if project:
-                    suffix += f" project={project}"
-                raise RuntimeError(f"peer ops blocked ({reason}){suffix}")
             ops = payload.get("ops")
             if not isinstance(ops, list):
                 raise RuntimeError("invalid ops response")

@@ -100,7 +100,7 @@ def test_ops_cursor_paging(tmp_path: Path) -> None:
         server.shutdown()
 
 
-def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypatch) -> None:
+def test_ops_cursor_advances_past_skipped_filtered_ops(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
     monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
@@ -166,6 +166,7 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
 
     server, port = _start_server(tmp_path / "mem.sqlite")
     try:
+        # First fetch: op-1 and op-2 returned, op-3 skipped, cursor advances past all three
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         headers = build_auth_headers(
             device_id="local",
@@ -180,13 +181,12 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
         assert resp.status == 200
         assert [op.get("op_id") for op in payload.get("ops", [])] == ["op-1", "op-2"]
         cursor = payload.get("next_cursor")
-        assert cursor == "2026-01-01T00:00:01Z|op-2"
+        # Cursor advances past the skipped op-3
+        assert cursor == "2026-01-01T00:00:02Z|op-3"
+        assert payload.get("skipped") == 1
         conn.close()
 
-        config_path.write_text(
-            json.dumps({"sync_projects_include": ["project-a", "project-b"]}) + "\n"
-        )
-
+        # Second fetch with same cursor: nothing left
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         headers = build_auth_headers(
             device_id="local",
@@ -199,13 +199,12 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
         resp = conn.getresponse()
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
-        assert [op.get("op_id") for op in payload.get("ops", [])] == ["op-3"]
-        assert payload.get("next_cursor") == "2026-01-01T00:00:02Z|op-3"
+        assert payload.get("ops") == []
     finally:
         server.shutdown()
 
 
-def test_ops_cursor_does_not_advance_for_unknown_project_when_include_set(
+def test_ops_cursor_advances_past_unknown_project_when_include_set(
     tmp_path: Path, monkeypatch
 ) -> None:
     config_path = tmp_path / "config.json"
@@ -276,12 +275,14 @@ def test_ops_cursor_does_not_advance_for_unknown_project_when_include_set(
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
         assert [op.get("op_id") for op in payload.get("ops", [])] == ["op-1"]
-        assert payload.get("next_cursor") == "2026-01-01T00:00:00Z|op-1"
+        # Cursor advances past the skipped op-2 (unknown project)
+        assert payload.get("next_cursor") == "2026-01-01T00:00:01Z|op-2"
+        assert payload.get("skipped") == 1
     finally:
         server.shutdown()
 
 
-def test_ops_endpoint_signals_blocked_head_op_when_filtered(tmp_path: Path, monkeypatch) -> None:
+def test_ops_endpoint_skips_filtered_ops(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
     monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
@@ -350,11 +351,11 @@ def test_ops_endpoint_signals_blocked_head_op_when_filtered(tmp_path: Path, monk
         resp = conn.getresponse()
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
+        # op-2 is skipped (no project, not in include list), cursor advances past it
         assert payload.get("ops") == []
-        assert payload.get("next_cursor") is None
-        assert payload.get("blocked") is True
-        assert payload.get("blocked_reason") == "project_filter"
-        assert payload.get("blocked_op", {}).get("op_id") == "op-2"
+        assert payload.get("next_cursor") == "2026-01-01T00:00:01Z|op-2"
+        assert payload.get("skipped") == 1
+        assert "blocked" not in payload
     finally:
         server.shutdown()
 
@@ -387,8 +388,10 @@ def test_peer_project_filter_override_allows_more_than_global(tmp_path: Path, mo
             created_at="2026-01-01T00:00:01Z",
         )
         ops, _next = store.load_replication_ops_since(None, limit=10, device_id="local")
-        allowed_default, _cursor, _blocked = store.filter_replication_ops_for_sync_with_status(ops)
+        allowed_default, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(ops)
         assert [op.get("op_id") for op in allowed_default] == ["op-1"]
+        assert skipped is not None
+        assert skipped["skipped_count"] == 1
 
         store.conn.execute(
             """
@@ -414,9 +417,66 @@ def test_peer_project_filter_override_allows_more_than_global(tmp_path: Path, mo
             ),
         )
         store.conn.commit()
-        allowed_peer, _cursor, _blocked = store.filter_replication_ops_for_sync_with_status(
+        allowed_peer, _cursor, skipped_peer = store.filter_replication_ops_for_sync_with_status(
             ops, peer_device_id="peer-1"
         )
         assert [op.get("op_id") for op in allowed_peer] == ["op-1", "op-2"]
+        assert skipped_peer is None
+    finally:
+        store.close()
+
+
+def test_filter_skips_blocked_ops_and_returns_ops_after(tmp_path: Path, monkeypatch) -> None:
+    """Ops after a blocked op are still returned — no deadlock."""
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_projects_include": ["wanted"]}) + "\n")
+    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        # op-1: wanted (allowed)
+        store.record_replication_op(
+            op_id="op-1",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"project": "wanted"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        # op-2: unwanted (skipped)
+        store.record_replication_op(
+            op_id="op-2",
+            entity_type="memory_item",
+            entity_id="k2",
+            op_type="upsert",
+            payload={"project": "unwanted"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:01Z",
+        )
+        # op-3: wanted (allowed — previously unreachable due to deadlock)
+        store.record_replication_op(
+            op_id="op-3",
+            entity_type="memory_item",
+            entity_id="k3",
+            op_type="upsert",
+            payload={"project": "wanted"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:02Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:02Z",
+        )
+
+        ops, _next = store.load_replication_ops_since(None, limit=10, device_id="local")
+        allowed, cursor, skipped = store.filter_replication_ops_for_sync_with_status(ops)
+
+        assert [op.get("op_id") for op in allowed] == ["op-1", "op-3"]
+        assert cursor == "2026-01-01T00:00:02Z|op-3"
+        assert skipped is not None
+        assert skipped["skipped_count"] == 1
+        assert skipped["op_id"] == "op-2"
+        assert skipped["project"] == "unwanted"
     finally:
         store.close()

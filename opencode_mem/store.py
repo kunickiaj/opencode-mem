@@ -321,17 +321,18 @@ class MemoryStore:
     def filter_replication_ops_for_sync_with_status(
         self, ops: Sequence[ReplicationOp], *, peer_device_id: str | None = None
     ) -> tuple[list[ReplicationOp], str | None, dict[str, Any] | None]:
-        """Filter outbound replication ops with safe cursor semantics.
+        """Filter outbound replication ops, skipping disallowed projects.
 
         Returns:
-        - allowed ops: longest prefix allowed by current include/exclude
-        - next_cursor: cursor for the last returned op (never advances past filtered)
-        - blocked: metadata for the first blocked op (if any)
+        - allowed ops: ops that pass the project filter (disallowed ops are skipped)
+        - next_cursor: cursor for the last *processed* op (advances past skipped ops)
+        - skipped: metadata about skipped ops (count + first skipped), or None
         """
 
         allowed_ops: list[ReplicationOp] = []
         next_cursor: str | None = None
-        blocked: dict[str, Any] | None = None
+        skipped_count = 0
+        first_skipped: dict[str, Any] | None = None
         for op in ops:
             entity_type = str(op.get("entity_type") or "")
             if entity_type == "memory_item":
@@ -341,20 +342,29 @@ class MemoryStore:
                     project_value = payload.get("project")
                     project = project_value if isinstance(project_value, str) else None
                 if not self._sync_project_allowed(project, peer_device_id=peer_device_id):
-                    blocked = {
-                        "reason": "project_filter",
-                        "op_id": str(op.get("op_id") or ""),
-                        "created_at": str(op.get("created_at") or ""),
-                        "entity_type": entity_type,
-                        "entity_id": str(op.get("entity_id") or ""),
-                        "project": project,
-                    }
-                    break
+                    skipped_count += 1
+                    if first_skipped is None:
+                        first_skipped = {
+                            "reason": "project_filter",
+                            "op_id": str(op.get("op_id") or ""),
+                            "created_at": str(op.get("created_at") or ""),
+                            "entity_type": entity_type,
+                            "entity_id": str(op.get("entity_id") or ""),
+                            "project": project,
+                        }
+                    # Advance cursor past the skipped op so sync doesn't stall
+                    next_cursor = self.compute_cursor(
+                        str(op.get("created_at") or ""), str(op.get("op_id") or "")
+                    )
+                    continue
             allowed_ops.append(op)
             next_cursor = self.compute_cursor(
                 str(op.get("created_at") or ""), str(op.get("op_id") or "")
             )
-        return allowed_ops, next_cursor, blocked
+        skipped: dict[str, Any] | None = None
+        if first_skipped is not None:
+            skipped = {**first_skipped, "skipped_count": skipped_count}
+        return allowed_ops, next_cursor, skipped
 
     def migrate_legacy_import_keys(self, *, limit: int = 2000) -> int:
         """Make legacy import_key values globally unique.
@@ -3793,7 +3803,11 @@ class MemoryStore:
                 continue
             if created_at is None or updated_at is None or session_id is None:
                 continue
-            metadata = db.from_json(item.get("metadata_json"))
+            raw_metadata = item.get("metadata_json") or item.get("metadata")
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            else:
+                metadata = db.from_json(raw_metadata)
             reranked.append(
                 MemoryResult(
                     id=int(memory_id),

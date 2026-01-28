@@ -530,7 +530,7 @@ def test_sync_doctor_warns_on_unknown_project_ops_when_include_active(
     assert "Unknown project ops: 1" in result.stdout
 
 
-def test_sync_doctor_reports_outbound_blocked_head_op(monkeypatch, tmp_path: Path) -> None:
+def test_sync_doctor_reports_outbound_skipped_ops(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
     config_path.write_text(
@@ -616,4 +616,4 @@ def test_sync_doctor_reports_outbound_blocked_head_op(monkeypatch, tmp_path: Pat
 
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
     assert result.exit_code == 0
-    assert "outbound_blocked=op-2" in result.stdout
+    assert "outbound_skipped=1" in result.stdout
