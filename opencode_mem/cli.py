@@ -30,7 +30,6 @@ from .commands.maintenance_cmds import (
     pack_stats_cmd,
     stats_cmd,
 )
-
 from .commands.memory_cmds import (
     compact_cmd,
     forget_cmd,

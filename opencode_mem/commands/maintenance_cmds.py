@@ -140,8 +140,8 @@ def pack_stats_cmd(
 ) -> None:
     """Analyze pack generation statistics (semantic usage, token savings)."""
     import json
-    from collections import defaultdict
     import statistics
+    from collections import defaultdict
 
     store = store_from_path(db_path)
     try:
@@ -207,21 +207,21 @@ def pack_stats_cmd(
         avg_hits = stats["semantic_hits_total"] / stats["total_packs"]
         avg_saved = statistics.mean(stats["tokens_saved"]) if stats["tokens_saved"] else 0
 
-        print(f"\n[bold]Semantic Retrieval[/bold]")
+        print("\n[bold]Semantic Retrieval[/bold]")
         print(f"- Avg Candidates: {avg_candidates:.1f}")
         print(f"- Avg Hits (included): {avg_hits:.1f}")
         print(
             f"- Zero-candidate packs: {stats['semantic_zero_count']} ({stats['semantic_zero_count'] / stats['total_packs'] * 100:.1f}%)"
         )
 
-        print(f"\n[bold]Fallbacks[/bold]")
+        print("\n[bold]Fallbacks[/bold]")
         if stats["fallback_counts"]:
             for k, v in stats["fallback_counts"].items():
                 print(f"- {k}: {v}")
         else:
             print("- None")
 
-        print(f"\n[bold]Tokens[/bold]")
+        print("\n[bold]Tokens[/bold]")
         print(f"- Avg Saved: {avg_saved:,.0f}")
 
     finally:
