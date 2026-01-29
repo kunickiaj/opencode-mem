@@ -21,7 +21,7 @@ from .config import (
     read_config_file,
     write_config_file,
 )
-from .db import DEFAULT_DB_PATH, from_json
+from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events  # noqa: F401
@@ -36,6 +36,8 @@ from .viewer_http import (
     send_html_response,
     send_json_response,
 )
+from .viewer_routes import memory as viewer_routes_memory
+from .viewer_routes import stats as viewer_routes_stats
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
@@ -103,32 +105,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         store: MemoryStore | None = None
         try:
             store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
-            if parsed.path == "/api/stats":
-                self._send_json(store.stats())
-                return
-            if parsed.path == "/api/usage":
-                params = parse_qs(parsed.query)
-                project_filter = params.get("project", [None])[0]
-                events_global = store.usage_summary()
-                totals_global = store.usage_totals()
-                events_filtered = None
-                totals_filtered = None
-                if project_filter:
-                    events_filtered = store.usage_summary(project_filter)
-                    totals_filtered = store.usage_totals(project_filter)
-                recent_packs = store.recent_pack_events(limit=10, project=project_filter)
-                self._send_json(
-                    {
-                        "project": project_filter,
-                        "events": events_filtered if project_filter else events_global,
-                        "totals": totals_filtered if project_filter else totals_global,
-                        "events_global": events_global,
-                        "totals_global": totals_global,
-                        "events_filtered": events_filtered,
-                        "totals_filtered": totals_filtered,
-                        "recent_packs": recent_packs,
-                    }
-                )
+            if viewer_routes_stats.handle_get(self, store, parsed.path, parsed.query):
                 return
             if parsed.path == "/api/raw-events/status":
                 params = parse_qs(parsed.query)
@@ -140,98 +117,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
-            if parsed.path == "/api/sessions":
-                params = parse_qs(parsed.query)
-                limit = int(params.get("limit", ["20"])[0])
-                sessions = store.all_sessions()[:limit]
-                for item in sessions:
-                    item["metadata_json"] = from_json(item.get("metadata_json"))
-                self._send_json({"items": sessions})
-                return
-            if parsed.path == "/api/projects":
-                sessions = store.all_sessions()
-                projects = sorted(
-                    {
-                        store._project_basename(p.strip())
-                        for s in sessions
-                        if (p := s.get("project"))
-                        and isinstance(p, str)
-                        and p.strip()
-                        and not p.strip().lower().startswith("fatal:")
-                        and store._project_basename(p.strip())
-                    }
-                )
-                self._send_json({"projects": projects})
-                return
-            if parsed.path == "/api/observations":
-                params = parse_qs(parsed.query)
-                limit = int(params.get("limit", ["20"])[0])
-                project = params.get("project", [None])[0]
-                kinds = [
-                    "bugfix",
-                    "change",
-                    "decision",
-                    "discovery",
-                    "exploration",
-                    "feature",
-                    "refactor",
-                ]
-                filters = {"project": project} if project else None
-                items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=filters)
-                self._send_json({"items": items})
-                return
-            if parsed.path == "/api/pack":
-                params = parse_qs(parsed.query)
-                context = params.get("context", [""])[0]
-                if not context:
-                    self._send_json({"error": "context required"}, status=400)
-                    return
-                config = load_config()
-                try:
-                    limit = int(params.get("limit", [str(config.pack_observation_limit)])[0])
-                except ValueError:
-                    self._send_json({"error": "limit must be int"}, status=400)
-                    return
-                token_budget = params.get("token_budget", [None])[0]
-                if token_budget in (None, ""):
-                    token_budget_value = None
-                else:
-                    try:
-                        token_budget_value = int(token_budget)
-                    except ValueError:
-                        self._send_json({"error": "token_budget must be int"}, status=400)
-                        return
-                project = params.get("project", [None])[0]
-                filters = {"project": project} if project else None
-                pack = store.build_memory_pack(
-                    context=context,
-                    limit=limit,
-                    token_budget=token_budget_value,
-                    filters=filters,
-                )
-                self._send_json(pack)
-                return
-            if parsed.path == "/api/memory":
-                params = parse_qs(parsed.query)
-                limit = int(params.get("limit", ["20"])[0])
-                kind = params.get("kind", [None])[0]
-                project = params.get("project", [None])[0]
-                filters = {}
-                if kind:
-                    filters["kind"] = kind
-                if project:
-                    filters["project"] = project
-                items = store.recent(limit=limit, filters=filters if filters else None)
-                self._send_json({"items": items})
-                return
-            if parsed.path == "/api/artifacts":
-                params = parse_qs(parsed.query)
-                session_id = params.get("session_id", [None])[0]
-                if not session_id:
-                    self._send_json({"error": "session_id required"}, status=400)
-                    return
-                items = store.session_artifacts(int(session_id))
-                self._send_json({"items": items})
+            if viewer_routes_memory.handle_get(self, store, parsed.path, parsed.query):
                 return
             if parsed.path == "/api/config":
                 config_path = get_config_path()
