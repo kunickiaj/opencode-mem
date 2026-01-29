@@ -11,6 +11,24 @@ from typing import Any
 from . import db
 from .capture import build_artifact_bundle, capture_post_context, capture_pre_context
 from .config import load_config
+from .ingest.events import (
+    LOW_SIGNAL_TOOLS,
+)
+from .ingest.events import (
+    budget_tool_events as _budget_tool_events_impl,
+)
+from .ingest.events import (
+    event_to_tool_event as _event_to_tool_event_impl,
+)
+from .ingest.events import (
+    extract_tool_events as _extract_tool_events_impl,
+)
+from .ingest.events import (
+    is_internal_memory_tool as _is_internal_memory_tool_impl,
+)
+from .ingest.events import (
+    normalize_tool_name as _normalize_tool_name_impl,
+)
 from .ingest.transcript import (
     build_transcript as _build_transcript_impl,
 )
@@ -26,13 +44,7 @@ from .ingest.transcript import (
 from .ingest.transcript import (
     normalize_request_text as _normalize_request_text_impl,
 )
-from .ingest_sanitize import _sanitize_payload, _sanitize_tool_output, _strip_private
-from .ingest_tool_events import (
-    _budget_tool_events,
-    _compact_bash_output,
-    _compact_list_output,
-    _compact_read_output,
-)
+from .ingest_sanitize import _strip_private
 from .observer import ObserverClient
 from .observer_prompts import ObserverContext, ToolEvent
 from .store import MemoryStore
@@ -45,17 +57,6 @@ OBSERVER: ObserverClient | None = None
 STORE_SUMMARY = True
 STORE_TYPED = True
 
-LOW_SIGNAL_TOOLS = {
-    "tui",
-    "shell",
-    "cmd",
-    "task",
-    "slashcommand",
-    "skill",
-    "todowrite",
-    "askuserquestion",
-}
-
 
 def _is_internal_memory_tool(tool: str) -> bool:
     """Return True for opencode-mem memory retrieval tools.
@@ -64,7 +65,7 @@ def _is_internal_memory_tool(tool: str) -> bool:
     new evidence can create feedback loops and noisy, self-referential memories.
     """
 
-    return tool.startswith("opencode_mem_memory_")
+    return _is_internal_memory_tool_impl(tool)
 
 
 TRIVIAL_REQUESTS = {
@@ -99,12 +100,7 @@ def _get_config() -> Any:
 
 
 def _normalize_tool_name(event: dict[str, Any]) -> str:
-    tool = str(event.get("tool") or event.get("type") or "tool").lower()
-    if "." in tool:
-        tool = tool.split(".")[-1]
-    if ":" in tool:
-        tool = tool.split(":")[-1]
-    return tool
+    return _normalize_tool_name_impl(event)
 
 
 def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
@@ -152,39 +148,24 @@ def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
 
 
 def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
-    if event.get("type") != "tool.execute.after":
-        return None
-    tool = _normalize_tool_name(event)
-    if _is_internal_memory_tool(tool):
-        return None
-    if tool in LOW_SIGNAL_TOOLS:
-        return None
-    args = event.get("args") or {}
-    result = _sanitize_tool_output(tool, event.get("result"), max_chars)
-    if tool == "read" and isinstance(result, str):
-        result = _compact_read_output(result)
-    if tool == "bash" and isinstance(result, str):
-        result = _compact_bash_output(result)
-    if tool in {"glob", "grep"} and isinstance(result, str):
-        result = _compact_list_output(result)
-    error = _sanitize_payload(event.get("error"), max_chars)
-    return ToolEvent(
-        tool_name=tool,
-        tool_input=_sanitize_payload(args, max_chars),
-        tool_output=result,
-        tool_error=error,
-        timestamp=event.get("timestamp"),
-        cwd=event.get("cwd") or args.get("cwd"),
-    )
+    return _event_to_tool_event_impl(event, max_chars=max_chars, low_signal_tools=LOW_SIGNAL_TOOLS)
 
 
 def _extract_tool_events(events: Iterable[dict[str, Any]], max_chars: int) -> list[ToolEvent]:
-    tool_events: list[ToolEvent] = []
-    for event in events:
-        tool_event = _event_to_tool_event(event, max_chars)
-        if tool_event:
-            tool_events.append(tool_event)
-    return tool_events
+    return _extract_tool_events_impl(events, max_chars)
+
+
+def _budget_tool_events(
+    tool_events: list[ToolEvent],
+    *,
+    max_total_chars: int,
+    max_events: int,
+) -> list[ToolEvent]:
+    return _budget_tool_events_impl(
+        tool_events,
+        max_total_chars=max_total_chars,
+        max_events=max_events,
+    )
 
 
 def _summary_body(summary: ParsedSummary) -> str:
