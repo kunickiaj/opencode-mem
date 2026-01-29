@@ -11,6 +11,8 @@ from typing import Any
 from . import db
 from .capture import build_artifact_bundle, capture_post_context, capture_pre_context
 from .config import load_config
+from .ingest.context import build_artifacts as _build_artifacts_impl
+from .ingest.context import capture_context as _capture_context_impl
 from .ingest.events import (
     LOW_SIGNAL_TOOLS,
 )
@@ -259,8 +261,11 @@ def ingest(payload: dict[str, Any]) -> None:
     files_modified = session_context.get("files_modified", [])
     files_read = session_context.get("files_read", [])
 
-    pre = capture_pre_context(cwd)
-    post = capture_post_context(cwd)
+    pre, post = _capture_context_impl(
+        cwd,
+        capture_pre=capture_pre_context,
+        capture_post=capture_post_context,
+    )
     diff_summary = post.get("git_diff") or ""
     project = payload.get("project") or pre.get("project")
     repo_root = pre.get("project") or None
@@ -343,7 +348,7 @@ def ingest(payload: dict[str, Any]) -> None:
         store.close()
         return
     transcript = _build_transcript(events)
-    artifacts = build_artifact_bundle(pre, post, transcript)
+    artifacts = _build_artifacts_impl(pre, post, transcript, build_bundle=build_artifact_bundle)
     for kind, body, path in artifacts:
         artifact_meta: dict[str, Any] | None = {"flush_batch": flush_batch} if flush_batch else None
         store.add_artifact(
