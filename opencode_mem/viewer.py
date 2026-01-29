@@ -6,29 +6,16 @@ import os
 import re
 import socket
 import threading
-from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import viewer_raw_events
-from .config import (
-    OpencodeMemConfig,
-    get_config_path,
-    get_env_overrides,
-    load_config,
-    read_config_file,
-    write_config_file,
-)
+from .config import load_config  # noqa: F401
 from .db import DEFAULT_DB_PATH
-from .net import pick_advertise_host, pick_advertise_hosts
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
-from .sync_daemon import sync_once
-from .sync_discovery import load_peer_addresses
-from .sync_identity import ensure_device_identity, load_public_key
 from .viewer_html import VIEWER_HTML
 from .viewer_http import (
     read_json_body,
@@ -36,8 +23,10 @@ from .viewer_http import (
     send_html_response,
     send_json_response,
 )
+from .viewer_routes import config as viewer_routes_config
 from .viewer_routes import memory as viewer_routes_memory
 from .viewer_routes import stats as viewer_routes_stats
+from .viewer_routes import sync as viewer_routes_sync
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
@@ -119,170 +108,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             if viewer_routes_memory.handle_get(self, store, parsed.path, parsed.query):
                 return
-            if parsed.path == "/api/config":
-                config_path = get_config_path()
-                try:
-                    config_data = read_config_file(config_path)
-                except ValueError as exc:
-                    self._send_json({"error": str(exc), "path": str(config_path)}, status=500)
-                    return
-                effective = asdict(load_config(config_path))
-                self._send_json(
-                    {
-                        "path": str(config_path),
-                        "config": config_data,
-                        "defaults": asdict(OpencodeMemConfig()),
-                        "effective": effective,
-                        "env_overrides": get_env_overrides(),
-                        "providers": _load_provider_options(),
-                    }
-                )
+            if viewer_routes_config.handle_get(
+                self,
+                path=parsed.path,
+                load_provider_options=_load_provider_options,
+            ):
                 return
-            if parsed.path == "/api/sync/status":
-                params = parse_qs(parsed.query)
-                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
-                    "1",
-                    "true",
-                    "yes",
-                }
-                config = load_config()
-                device_row = store.conn.execute(
-                    "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
-                ).fetchone()
-                daemon_state = store.get_sync_daemon_state() or {}
-                peer_count = store.conn.execute(
-                    "SELECT COUNT(1) AS total FROM sync_peers"
-                ).fetchone()
-                last_sync = store.conn.execute(
-                    "SELECT MAX(last_sync_at) AS last_sync_at FROM sync_peers"
-                ).fetchone()
-                last_error = daemon_state.get("last_error")
-                last_error_at = daemon_state.get("last_error_at")
-                last_ok_at = daemon_state.get("last_ok_at")
-                daemon_state_value = "ok"
-                if last_error and (not last_ok_at or str(last_ok_at) < str(last_error_at or "")):
-                    daemon_state_value = "error"
-
-                include = getattr(config, "sync_projects_include", []) or []
-                exclude = getattr(config, "sync_projects_exclude", []) or []
-                project_filter_active = bool([p for p in include if p] or [p for p in exclude if p])
-                payload: dict[str, Any] = {
-                    "enabled": config.sync_enabled,
-                    "interval_s": config.sync_interval_s,
-                    "peer_count": int(peer_count["total"]) if peer_count else 0,
-                    "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
-                    "daemon_state": daemon_state_value,
-                    "project_filter_active": project_filter_active,
-                    "project_filter": {"include": include, "exclude": exclude},
-                    "redacted": not include_diagnostics,
-                }
-
-                if include_diagnostics:
-                    payload.update(
-                        {
-                            "device_id": device_row["device_id"] if device_row else None,
-                            "fingerprint": device_row["fingerprint"] if device_row else None,
-                            "bind": f"{config.sync_host}:{config.sync_port}",
-                            "daemon_last_error": last_error,
-                            "daemon_last_error_at": last_error_at,
-                            "daemon_last_ok_at": last_ok_at,
-                        }
-                    )
-                self._send_json(payload)
-                return
-            if parsed.path == "/api/sync/peers":
-                params = parse_qs(parsed.query)
-                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
-                    "1",
-                    "true",
-                    "yes",
-                }
-                rows = store.conn.execute(
-                    """
-                    SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
-                           last_seen_at, last_sync_at, last_error
-                    FROM sync_peers
-                    ORDER BY name, peer_device_id
-                    """
-                ).fetchall()
-                peers = []
-                for row in rows:
-                    addresses = (
-                        load_peer_addresses(store.conn, row["peer_device_id"])
-                        if include_diagnostics
-                        else []
-                    )
-                    peers.append(
-                        {
-                            "peer_device_id": row["peer_device_id"],
-                            "name": row["name"],
-                            "fingerprint": row["pinned_fingerprint"]
-                            if include_diagnostics
-                            else None,
-                            "pinned": bool(row["pinned_fingerprint"]),
-                            "addresses": addresses,
-                            "last_seen_at": row["last_seen_at"],
-                            "last_sync_at": row["last_sync_at"],
-                            "last_error": row["last_error"] if include_diagnostics else None,
-                            "has_error": bool(row["last_error"]),
-                        }
-                    )
-                self._send_json({"items": peers, "redacted": not include_diagnostics})
-                return
-            if parsed.path == "/api/sync/attempts":
-                params = parse_qs(parsed.query)
-                limit = int(params.get("limit", ["25"])[0])
-                rows = store.conn.execute(
-                    """
-                    SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
-                    FROM sync_attempts
-                    ORDER BY finished_at DESC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
-                self._send_json({"items": [dict(row) for row in rows]})
-                return
-            if parsed.path == "/api/sync/pairing":
-                params = parse_qs(parsed.query)
-                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
-                    "1",
-                    "true",
-                    "yes",
-                }
-                config = load_config()
-                if not include_diagnostics:
-                    self._send_json({"redacted": True})
-                    return
-                keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
-                keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
-                device_row = store.conn.execute(
-                    "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"
-                ).fetchone()
-                if device_row:
-                    device_id = device_row["device_id"]
-                    public_key = device_row["public_key"]
-                    fingerprint = device_row["fingerprint"]
-                else:
-                    device_id, fingerprint = ensure_device_identity(store.conn, keys_dir=keys_dir)
-                    public_key = load_public_key(keys_dir)
-                if not public_key or not device_id or not fingerprint:
-                    self._send_json({"error": "public key missing"}, status=500)
-                    return
-                payload = {
-                    "device_id": device_id,
-                    "fingerprint": fingerprint,
-                    "public_key": public_key,
-                    "addresses": [
-                        f"{host}:{config.sync_port}"
-                        for host in pick_advertise_hosts(config.sync_advertise)
-                        if host and host != "0.0.0.0"
-                    ]
-                    or [
-                        f"{pick_advertise_host(config.sync_advertise) or config.sync_host}:{config.sync_port}"
-                    ],
-                }
-                self._send_json(payload)
+            if viewer_routes_sync.handle_get(self, store, parsed.path, parsed.query):
                 return
             self.send_response(404)
             self.end_headers()
@@ -303,61 +135,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._reject_cross_origin():
             return
-        if parsed.path == "/api/sync/peers/rename":
+        if parsed.path in {"/api/sync/peers/rename", "/api/sync/actions/sync-now"}:
             payload = self._read_json()
-            if payload is None:
-                self._send_json({"error": "invalid json"}, status=400)
-                return
-            peer_device_id = payload.get("peer_device_id")
-            name = payload.get("name")
-            if not isinstance(peer_device_id, str) or not peer_device_id:
-                self._send_json({"error": "peer_device_id required"}, status=400)
-                return
-            if not isinstance(name, str) or not name.strip():
-                self._send_json({"error": "name required"}, status=400)
-                return
+            if parsed.path == "/api/sync/actions/sync-now" and payload is None:
+                payload = {}
             store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
             try:
-                row = store.conn.execute(
-                    "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
-                    (peer_device_id,),
-                ).fetchone()
-                if row is None:
-                    self._send_json({"error": "peer not found"}, status=404)
+                if viewer_routes_sync.handle_post(self, store, parsed.path, payload):
                     return
-                store.conn.execute(
-                    "UPDATE sync_peers SET name = ? WHERE peer_device_id = ?",
-                    (name.strip(), peer_device_id),
-                )
-                store.conn.commit()
-                self._send_json({"ok": True})
-                return
-            finally:
-                store.close()
-        if parsed.path == "/api/sync/actions/sync-now":
-            payload = self._read_json() or {}
-            peer_device_id = payload.get("peer_device_id")
-            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
-            try:
-                config = load_config()
-                if not config.sync_enabled:
-                    self._send_json({"error": "sync_disabled"}, status=403)
-                    return
-                rows = []
-                if isinstance(peer_device_id, str) and peer_device_id:
-                    rows = store.conn.execute(
-                        "SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?",
-                        (peer_device_id,),
-                    ).fetchall()
-                else:
-                    rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
-                results = []
-                for row in rows:
-                    peer_id = row["peer_device_id"]
-                    addresses = load_peer_addresses(store.conn, peer_id)
-                    results.append(sync_once(store, peer_id, addresses))
-                self._send_json({"items": results})
-                return
             finally:
                 store.close()
         if parsed.path == "/api/raw-events":
@@ -564,156 +349,26 @@ class ViewerHandler(BaseHTTPRequestHandler):
             finally:
                 store.close()
 
-        if parsed.path != "/api/config":
-            self.send_response(404)
-            self.end_headers()
+        if viewer_routes_config.handle_post(
+            self,
+            path=parsed.path,
+            load_provider_options=_load_provider_options,
+        ):
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8") if length else ""
-        try:
-            payload = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            self._send_json({"error": "invalid json"}, status=400)
-            return
-        if not isinstance(payload, dict):
-            self._send_json({"error": "payload must be an object"}, status=400)
-            return
-        updates = payload.get("config") if "config" in payload else payload
-        if not isinstance(updates, dict):
-            self._send_json({"error": "config must be an object"}, status=400)
-            return
-        allowed_keys = {
-            "observer_provider",
-            "observer_model",
-            "observer_max_chars",
-            "pack_observation_limit",
-            "pack_session_limit",
-            "sync_enabled",
-            "sync_host",
-            "sync_port",
-            "sync_interval_s",
-            "sync_mdns",
-        }
-        allowed_providers = set(_load_provider_options())
-        config_path = get_config_path()
-        try:
-            config_data = read_config_file(config_path)
-        except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=500)
-            return
-        for key in allowed_keys:
-            if key not in updates:
-                continue
-            value = updates[key]
-            if value in (None, ""):
-                config_data.pop(key, None)
-                continue
-            if key == "observer_provider":
-                if not isinstance(value, str):
-                    self._send_json({"error": "observer_provider must be string"}, status=400)
-                    return
-                provider = value.strip().lower()
-                if provider not in allowed_providers:
-                    self._send_json(
-                        {"error": "observer_provider must match a configured provider"},
-                        status=400,
-                    )
-                    return
-                config_data[key] = provider
-                continue
-            if key == "observer_model":
-                if not isinstance(value, str):
-                    self._send_json({"error": "observer_model must be string"}, status=400)
-                    return
-                model_value = value.strip()
-                if not model_value:
-                    config_data.pop(key, None)
-                    continue
-                config_data[key] = model_value
-                continue
-            if key == "observer_max_chars":
-                try:
-                    value = int(value)
-                except (TypeError, ValueError):
-                    self._send_json({"error": "observer_max_chars must be int"}, status=400)
-                    return
-                if value <= 0:
-                    self._send_json({"error": "observer_max_chars must be positive"}, status=400)
-                    return
-                config_data[key] = value
-                continue
-            if key in {"pack_observation_limit", "pack_session_limit"}:
-                try:
-                    value = int(value)
-                except (TypeError, ValueError):
-                    self._send_json({"error": f"{key} must be int"}, status=400)
-                    return
-                if value <= 0:
-                    self._send_json({"error": f"{key} must be positive"}, status=400)
-                    return
-                config_data[key] = value
-                continue
-            if key in {"sync_enabled", "sync_mdns"}:
-                if not isinstance(value, bool):
-                    self._send_json({"error": f"{key} must be boolean"}, status=400)
-                    return
-                config_data[key] = value
-                continue
-            if key == "sync_host":
-                if not isinstance(value, str):
-                    self._send_json({"error": "sync_host must be string"}, status=400)
-                    return
-                host_value = value.strip()
-                if not host_value:
-                    config_data.pop(key, None)
-                    continue
-                config_data[key] = host_value
-                continue
-            if key in {"sync_port", "sync_interval_s"}:
-                try:
-                    value = int(value)
-                except (TypeError, ValueError):
-                    self._send_json({"error": f"{key} must be int"}, status=400)
-                    return
-                if value <= 0:
-                    self._send_json({"error": f"{key} must be positive"}, status=400)
-                    return
-                config_data[key] = value
-                continue
-        try:
-            write_config_file(config_data, config_path)
-        except OSError:
-            self._send_json({"error": "failed to write config"}, status=500)
-            return
-        self._send_json({"path": str(config_path), "config": config_data})
+
+        self.send_response(404)
+        self.end_headers()
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if self._reject_cross_origin():
             return
-        if not parsed.path.startswith("/api/sync/peers/"):
-            self.send_response(404)
-            self.end_headers()
-            return
-        peer_device_id = parsed.path.split("/api/sync/peers/", 1)[1].strip()
-        if not peer_device_id:
-            self._send_json({"error": "peer_device_id required"}, status=400)
-            return
         store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
         try:
-            row = store.conn.execute(
-                "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
-                (peer_device_id,),
-            ).fetchone()
-            if row is None:
-                self._send_json({"error": "peer not found"}, status=404)
+            if viewer_routes_sync.handle_delete(self, store, parsed.path):
                 return
-            store.conn.execute(
-                "DELETE FROM sync_peers WHERE peer_device_id = ?",
-                (peer_device_id,),
-            )
-            store.conn.commit()
-            self._send_json({"ok": True})
+            self.send_response(404)
+            self.end_headers()
         finally:
             store.close()
 
