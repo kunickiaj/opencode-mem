@@ -31,6 +31,24 @@ from .ingest.events import (
 from .ingest.events import (
     normalize_tool_name as _normalize_tool_name_impl,
 )
+from .ingest.persist import (
+    end_session as _end_session_impl,
+)
+from .ingest.persist import (
+    persist_artifacts as _persist_artifacts_impl,
+)
+from .ingest.persist import (
+    persist_observations as _persist_observations_impl,
+)
+from .ingest.persist import (
+    persist_session_summary as _persist_session_summary_impl,
+)
+from .ingest.persist import (
+    persist_user_prompts as _persist_user_prompts_impl,
+)
+from .ingest.persist import (
+    record_observer_usage as _record_observer_usage_impl,
+)
 from .ingest.transcript import (
     build_transcript as _build_transcript_impl,
 )
@@ -303,16 +321,12 @@ def ingest(payload: dict[str, Any]) -> None:
             },
         )
     prompts = _extract_prompts(events)
-    prompt_number = None
-    for prompt in prompts:
-        prompt_number = prompt.get("prompt_number") or prompt_number
-        store.add_user_prompt(
-            session_id,
-            project,
-            prompt["prompt_text"],
-            prompt_number=prompt.get("prompt_number"),
-            metadata={"source": "plugin"},
-        )
+    prompt_number = _persist_user_prompts_impl(
+        store,
+        session_id=session_id,
+        project=project,
+        prompts=prompts,
+    )
     max_chars = _get_config().summary_max_chars
     tool_events = _extract_tool_events(events, max_chars)
 
@@ -336,8 +350,9 @@ def ingest(payload: dict[str, Any]) -> None:
     ):
         should_process = False
     if not should_process:
-        store.end_session(
-            session_id,
+        _end_session_impl(
+            store,
+            session_id=session_id,
             metadata={
                 "post": post,
                 "source": "plugin",
@@ -349,11 +364,12 @@ def ingest(payload: dict[str, Any]) -> None:
         return
     transcript = _build_transcript(events)
     artifacts = _build_artifacts_impl(pre, post, transcript, build_bundle=build_artifact_bundle)
-    for kind, body, path in artifacts:
-        artifact_meta: dict[str, Any] | None = {"flush_batch": flush_batch} if flush_batch else None
-        store.add_artifact(
-            session_id, kind=kind, path=path, content_text=body, metadata=artifact_meta
-        )
+    _persist_artifacts_impl(
+        store,
+        session_id=session_id,
+        artifacts=artifacts,
+        flush_batch=flush_batch,
+    )
 
     # Build session context summary for observer
     session_summary_parts = []
@@ -460,92 +476,47 @@ def ingest(payload: dict[str, Any]) -> None:
                 summary.request = derived_request
             summary_to_store = summary
 
-    for obs in observations_to_store:
-        metadata: dict[str, Any] = {"source": "observer"}
-        if flush_batch:
-            metadata["flush_batch"] = flush_batch
-        if discovery_group:
-            metadata["discovery_group"] = discovery_group
-        metadata["discovery_tokens"] = int(discovery_tokens)
-        metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
-        store.remember_observation(
-            session_id,
-            kind=obs.kind.strip().lower(),
-            title=obs.title or obs.narrative[:80],
-            narrative=obs.narrative,
-            subtitle=obs.subtitle,
-            facts=obs.facts,
-            concepts=obs.concepts,
-            files_read=obs.files_read,
-            files_modified=obs.files_modified,
-            prompt_number=prompt_number,
-            confidence=0.6,
-            metadata=metadata,
-        )
-
-    if summary_to_store:
-        summary_metadata: dict[str, Any] = {
-            "request": summary_to_store.request,
-            "investigated": summary_to_store.investigated,
-            "learned": summary_to_store.learned,
-            "completed": summary_to_store.completed,
-            "next_steps": summary_to_store.next_steps,
-            "notes": summary_to_store.notes,
-            "files_read": summary_to_store.files_read,
-            "files_modified": summary_to_store.files_modified,
-            "prompt_number": prompt_number,
-            "source": "observer",
-        }
-        if flush_batch:
-            summary_metadata["flush_batch"] = flush_batch
-        if request_original:
-            summary_metadata["request_original"] = request_original
-        if discovery_group:
-            summary_metadata["discovery_group"] = discovery_group
-        summary_metadata["discovery_tokens"] = int(discovery_tokens)
-        summary_metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
-        store.add_session_summary(
-            session_id,
-            project,
-            summary_to_store.request,
-            summary_to_store.investigated,
-            summary_to_store.learned,
-            summary_to_store.completed,
-            summary_to_store.next_steps,
-            summary_to_store.notes,
-            files_read=summary_to_store.files_read,
-            files_edited=summary_to_store.files_modified,
-            prompt_number=prompt_number,
-            metadata=summary_metadata,
-        )
-        body_text = _summary_body(summary_to_store)
-        if body_text and not is_low_signal_observation(body_text):
-            summary_title = _first_sentence(summary_to_store.request) or "Session summary"
-            store.remember(
-                session_id,
-                kind="session_summary",
-                title=summary_title,
-                body_text=body_text,
-                confidence=0.6,
-                metadata=summary_metadata,
-            )
-    # Record observer work investment (tokens spent creating memories)
-    observer_output_tokens = store.estimate_tokens(response.raw or "")
-    observer_input_tokens = store.estimate_tokens(transcript)
-    store.record_usage(
-        "observe",
+    _persist_observations_impl(
+        store,
         session_id=session_id,
-        tokens_read=observer_input_tokens,
-        tokens_written=observer_output_tokens,
-        metadata={
-            "project": project,
-            "observations": len(observations_to_store),
-            "has_summary": summary_to_store is not None,
-        },
+        observations=observations_to_store,
+        prompt_number=prompt_number,
+        discovery_group=discovery_group,
+        discovery_tokens=int(discovery_tokens),
+        discovery_source="usage" if usage_token_total > 0 else "estimate",
+        flush_batch=flush_batch,
     )
 
-    store.end_session(
-        session_id,
+    if summary_to_store:
+        _persist_session_summary_impl(
+            store,
+            session_id=session_id,
+            project=project,
+            summary=summary_to_store,
+            prompt_number=prompt_number,
+            request_original=request_original,
+            discovery_group=discovery_group,
+            discovery_tokens=int(discovery_tokens),
+            discovery_source="usage" if usage_token_total > 0 else "estimate",
+            flush_batch=flush_batch,
+            summary_body=_summary_body,
+            is_low_signal_text=is_low_signal_observation,
+            first_sentence=_first_sentence,
+        )
+
+    _record_observer_usage_impl(
+        store,
+        session_id=session_id,
+        project=project,
+        response_raw=response.raw or "",
+        transcript=transcript,
+        observation_count=len(observations_to_store),
+        has_summary=summary_to_store is not None,
+    )
+
+    _end_session_impl(
+        store,
+        session_id=session_id,
         metadata={"post": post, "source": "plugin", "event_count": len(events)},
     )
     store.close()
