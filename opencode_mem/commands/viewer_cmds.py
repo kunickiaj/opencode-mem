@@ -106,10 +106,15 @@ def serve(
 
     if stop or restart:
         pid = _read_pid(pid_path)
-        if pid is None and _port_open(host, port):
-            pid = _pid_for_port(port)
-            if pid is not None:
-                print(f"[yellow]Found viewer pid {pid} by port scan[/yellow]")
+        port_pid = _pid_for_port(port) if _port_open(host, port) else None
+        if pid is not None and port_pid is not None and pid != port_pid:
+            print(
+                f"[yellow]Viewer PID file mismatch (file {pid}, port {port_pid}); using port pid[/yellow]"
+            )
+            pid = port_pid
+        if pid is None and port_pid is not None:
+            pid = port_pid
+            print(f"[yellow]Found viewer pid {pid} by port scan[/yellow]")
         if pid is None:
             if _port_open(host, port):
                 print("[yellow]Viewer is running but no PID file was found[/yellow]")
@@ -118,6 +123,9 @@ def serve(
         elif not _pid_running(pid):
             _clear_pid(pid_path)
             print("[yellow]Removed stale viewer PID file[/yellow]")
+        elif not _port_open(host, port):
+            _clear_pid(pid_path)
+            print("[yellow]Removed stale viewer PID file (port not listening)[/yellow]")
         else:
             os.kill(pid, signal.SIGTERM)
             deadline = time.monotonic() + 2.0
@@ -133,10 +141,10 @@ def serve(
 
     if background:
         pid = _read_pid(pid_path)
-        if pid is not None and _pid_running(pid):
-            print(f"[yellow]Viewer already running (pid {pid})[/yellow]")
-            return
         if pid is not None:
+            if _pid_running(pid) and _port_open(host, port):
+                print(f"[yellow]Viewer already running (pid {pid})[/yellow]")
+                return
             _clear_pid(pid_path)
         if _port_open(host, port):
             print(f"[yellow]Viewer already running at http://{host}:{port}[/yellow]")
