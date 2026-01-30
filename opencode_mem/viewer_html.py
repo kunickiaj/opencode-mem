@@ -1348,9 +1348,9 @@ VIEWER_HTML = """<!doctype html>
       function extractFactsFromBody(text) {
         if (!text) return [];
         const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
-        const bulletLines = lines.filter(line => /^[-*•]\\s+/.test(line) || /^\\d+\\./.test(line));
+        const bulletLines = lines.filter(line => /^[-*\\u2022]\\s+/.test(line) || /^\\d+\\./.test(line));
         if (!bulletLines.length) return [];
-        return bulletLines.map(line => line.replace(/^[-*•]\\s+/, "").replace(/^\\d+\\.\\s+/, ""));
+        return bulletLines.map(line => line.replace(/^[-*\\u2022]\\s+/, "").replace(/^\\d+\\.\\s+/, ""));
       }
 
       function isLowSignalObservation(item) {
