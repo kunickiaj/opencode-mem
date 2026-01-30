@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs
@@ -8,8 +9,54 @@ from urllib.parse import parse_qs
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
 from ..sync_daemon import sync_once
-from ..sync_discovery import load_peer_addresses
+from ..sync_discovery import load_peer_addresses, normalize_address
 from ..sync_identity import ensure_device_identity, load_public_key
+
+
+def _attempt_status(attempt: dict[str, Any]) -> str:
+    if attempt.get("ok"):
+        return "ok"
+    if attempt.get("error"):
+        return "error"
+    return "unknown"
+
+
+def _attempt_address(attempt: dict[str, Any]) -> str | None:
+    raw = str(attempt.get("address") or "")
+    if raw:
+        return raw
+    error = str(attempt.get("error") or "")
+    if not error:
+        return None
+    match = re.match(r"^(https?://\S+?)(?::\s|$)", error)
+    return match.group(1) if match else None
+
+
+def _peer_status(peer: dict[str, Any]) -> dict[str, Any]:
+    last_sync_at = peer.get("last_sync_at")
+    last_ping_at = peer.get("last_seen_at")
+    has_error = bool(peer.get("has_error"))
+    sync_status = "error" if has_error else ("ok" if last_sync_at else "unknown")
+    ping_status = "ok" if last_ping_at else "unknown"
+    return {
+        "sync_status": sync_status,
+        "ping_status": ping_status,
+        "last_sync_at": last_sync_at,
+        "last_ping_at": last_ping_at,
+    }
+
+
+def _find_peer_device_id_for_address(store: MemoryStore, address: str) -> str | None:
+    needle = normalize_address(address)
+    if not needle:
+        return None
+    rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
+    for row in rows:
+        peer_id = str(row["peer_device_id"])
+        for candidate in load_peer_addresses(store.conn, peer_id):
+            if normalize_address(candidate) == needle:
+                return peer_id
+    return None
 
 
 class _ViewerHandler(Protocol):
@@ -77,26 +124,28 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             ORDER BY name, peer_device_id
             """
         ).fetchall()
-        peers_items = []
+        peers_items: list[dict[str, Any]] = []
         for row in peers_rows:
             addresses = (
                 load_peer_addresses(store.conn, row["peer_device_id"])
                 if include_diagnostics
                 else []
             )
-            peers_items.append(
-                {
-                    "peer_device_id": row["peer_device_id"],
-                    "name": row["name"],
-                    "fingerprint": row["pinned_fingerprint"] if include_diagnostics else None,
-                    "pinned": bool(row["pinned_fingerprint"]),
-                    "addresses": addresses,
-                    "last_seen_at": row["last_seen_at"],
-                    "last_sync_at": row["last_sync_at"],
-                    "last_error": row["last_error"] if include_diagnostics else None,
-                    "has_error": bool(row["last_error"]),
-                }
-            )
+            peer_item: dict[str, Any] = {
+                "peer_device_id": row["peer_device_id"],
+                "name": row["name"],
+                "fingerprint": row["pinned_fingerprint"] if include_diagnostics else None,
+                "pinned": bool(row["pinned_fingerprint"]),
+                "addresses": addresses,
+                "last_seen_at": row["last_seen_at"],
+                "last_sync_at": row["last_sync_at"],
+                "last_error": row["last_error"] if include_diagnostics else None,
+                "has_error": bool(row["last_error"]),
+            }
+            peer_item["status"] = _peer_status(peer_item)
+            peers_items.append(peer_item)
+
+        peers_map = {peer["peer_device_id"]: peer["status"] for peer in peers_items}
         attempts_rows = store.conn.execute(
             """
             SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
@@ -106,12 +155,25 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             """,
             (25,),
         ).fetchall()
-        attempts_items = [dict(row) for row in attempts_rows]
+        attempts_items: list[dict[str, Any]] = []
+        for row in attempts_rows:
+            item = dict(row)
+            item["status"] = _attempt_status(item)
+            item["address"] = _attempt_address(item)
+            attempts_items.append(item)
+
+        status_block: dict[str, Any] = {
+            **status_payload,
+            "peers": peers_map,
+            "pending": 0,
+            "sync": {},
+            "ping": {},
+        }
 
         handler._send_json(
             {
                 **status_payload,
-                "status": status_payload,
+                "status": status_block,
                 "peers": peers_items,
                 "attempts": attempts_items,
             }
@@ -260,9 +322,19 @@ def handle_post(
 
         payload = payload or {}
         peer_device_id = payload.get("peer_device_id")
+        address = payload.get("address")
         config = _viewer.load_config()
         if not config.sync_enabled:
             handler._send_json({"error": "sync_disabled"}, status=403)
+            return True
+
+        if isinstance(address, str) and address.strip():
+            resolved_peer_id = _find_peer_device_id_for_address(store, address.strip())
+            if not resolved_peer_id:
+                handler._send_json({"error": "unknown peer address"}, status=404)
+                return True
+            result = sync_once(store, resolved_peer_id, [address.strip()])
+            handler._send_json({"items": [result]})
             return True
         if isinstance(peer_device_id, str) and peer_device_id:
             rows = store.conn.execute(
