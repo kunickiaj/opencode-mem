@@ -9,6 +9,7 @@ import pytest
 
 from opencode_mem import db, sync_daemon
 from opencode_mem.store import MemoryStore, ReplicationOp
+from opencode_mem.sync import http_client
 from opencode_mem.sync_api import build_sync_handler
 from opencode_mem.sync_daemon import sync_once
 from opencode_mem.sync_discovery import update_peer_addresses
@@ -180,8 +181,8 @@ def test_request_json_respects_body_bytes(monkeypatch) -> None:
         called["conn"] = DummyConn()
         return called["conn"]
 
-    monkeypatch.setattr("opencode_mem.sync_daemon.HTTPConnection", fake_http)
-    status, _payload = sync_daemon._request_json(
+    monkeypatch.setattr("opencode_mem.sync.http_client.HTTPConnection", fake_http)
+    status, _payload = http_client.request_json(
         "POST",
         "http://example.test/ops",
         body={"ops": [1]},
@@ -284,7 +285,7 @@ def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) 
                 return 200, {"ops": ops, "next_cursor": "9999-01-01T00:00:00Z|zzz"}
             raise AssertionError(f"unexpected request: {method} {url}")
 
-        monkeypatch.setattr(sync_daemon, "_request_json", fake_request_json)
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
 
         result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
         assert result["ok"] is True
@@ -328,7 +329,7 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
                 }
             return 200, {"inserted": 0, "updated": 0}
 
-        monkeypatch.setattr(sync_daemon, "_request_json", fake_request_json)
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
 
         result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
         assert result["ok"] is True

@@ -7,14 +7,14 @@ import os
 import socket
 import threading
 import traceback
-from http.client import HTTPConnection, HTTPSConnection
 from http.server import HTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 from . import db
 from .store import MemoryStore, ReplicationOp
+from .sync import http_client
 from .sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
 from .sync_auth import build_auth_headers
 from .sync_discovery import (
@@ -83,56 +83,6 @@ def _chunk_ops_by_size(
     if current:
         batches.append(current)
     return batches
-
-
-def _build_base_url(address: str) -> str:
-    trimmed = address.strip().rstrip("/")
-    if not trimmed:
-        return ""
-    parsed = urlparse(trimmed)
-    if parsed.scheme:
-        return trimmed
-    return f"http://{trimmed}"
-
-
-def _request_json(
-    method: str,
-    url: str,
-    *,
-    headers: dict[str, str] | None = None,
-    body: dict[str, Any] | None = None,
-    body_bytes: bytes | None = None,
-    timeout_s: float = 3.0,
-) -> tuple[int, dict[str, Any] | None]:
-    parsed = urlparse(url)
-    if not parsed.hostname:
-        raise ValueError("missing hostname")
-    if parsed.scheme == "https":
-        conn = HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout_s)
-    else:
-        conn = HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout_s)
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    payload = None
-    if body_bytes is None and body is not None:
-        body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    request_headers = {"Accept": "application/json"}
-    if body_bytes is not None:
-        request_headers["Content-Type"] = "application/json"
-        request_headers["Content-Length"] = str(len(body_bytes))
-    if headers:
-        request_headers.update(headers)
-    conn.request(method, path, body=body_bytes, headers=request_headers)
-    resp = conn.getresponse()
-    raw = resp.read()
-    if raw:
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            payload = None
-    conn.close()
-    return resp.status, payload if isinstance(payload, dict) else None
 
 
 def _get_replication_cursor(
@@ -210,7 +160,7 @@ def sync_once(
     device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
     error: str | None = None
     for address in addresses:
-        base_url = _build_base_url(address)
+        base_url = http_client.build_base_url(address)
         if not base_url:
             continue
         try:
@@ -222,7 +172,7 @@ def sync_once(
                 body_bytes=b"",
                 keys_dir=keys_dir,
             )
-            status_code, status_payload = _request_json(
+            status_code, status_payload = http_client.request_json(
                 "GET",
                 status_url,
                 headers=status_headers,
@@ -242,7 +192,7 @@ def sync_once(
                 body_bytes=b"",
                 keys_dir=keys_dir,
             )
-            status, payload = _request_json("GET", get_url, headers=get_headers)
+            status, payload = http_client.request_json("GET", get_url, headers=get_headers)
             if status != 200 or payload is None:
                 detail = payload.get("error") if isinstance(payload, dict) else None
                 suffix = f" ({status}: {detail})" if detail else f" ({status})"
@@ -287,7 +237,7 @@ def sync_once(
                         body_bytes=body_bytes,
                         keys_dir=keys_dir,
                     )
-                    status, payload = _request_json(
+                    status, payload = http_client.request_json(
                         "POST",
                         post_url,
                         headers=post_headers,
