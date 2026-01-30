@@ -2154,7 +2154,9 @@ VIEWER_HTML = """<!doctype html>
 
       async function loadSyncStatus() {
         try {
-          const resp = await fetch("/api/sync/status");
+          const diag = isSyncDiagnosticsOpen();
+          const diagParam = diag ? "?includeDiagnostics=1" : "";
+          const resp = await fetch(`/api/sync/status${diagParam}`);
           if (!resp.ok) return;
           const payload = await resp.json();
           lastSyncStatus = payload.status || null;
@@ -2170,7 +2172,9 @@ VIEWER_HTML = """<!doctype html>
 
       async function loadPairing() {
         try {
-          const resp = await fetch("/api/sync/pairing");
+          const diag = isSyncDiagnosticsOpen();
+          const diagParam = diag ? "?includeDiagnostics=1" : "";
+          const resp = await fetch(`/api/sync/pairing${diagParam}`);
           if (!resp.ok) return;
           const payload = await resp.json();
           pairingPayloadRaw = payload || null;
