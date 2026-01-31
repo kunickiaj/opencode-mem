@@ -841,32 +841,6 @@
         flex-wrap: wrap;
         margin-bottom: 12px;
       }
-      .feed-update {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(31, 111, 92, 0.28);
-        background: rgba(31, 111, 92, 0.10);
-        color: var(--accent);
-        font-size: 12px;
-        cursor: pointer;
-        transition: background 0.2s ease, border-color 0.2s ease;
-      }
-      .feed-update:hover {
-        background: rgba(31, 111, 92, 0.16);
-        border-color: rgba(31, 111, 92, 0.44);
-      }
-      [data-theme="dark"] .feed-update {
-        border-color: rgba(77, 212, 180, 0.28);
-        background: rgba(77, 212, 180, 0.10);
-        color: #4dd4b4;
-      }
-      [data-theme="dark"] .feed-update:hover {
-        border-color: rgba(77, 212, 180, 0.44);
-        background: rgba(77, 212, 180, 0.14);
-      }
       .match {
         padding: 0 2px;
         border-radius: 4px;
@@ -1338,7 +1312,6 @@
           <div class="feed-controls">
             <div class="section-meta" id="feedMeta">Loading memories…</div>
             <div class="feed-controls-right">
-              <button class="feed-update" id="feedUpdateBanner" hidden>New items · Update</button>
               <input class="feed-search" id="feedSearch" placeholder="Search title/body/tags…" />
               <div class="feed-toggle" id="feedTypeToggle">
                 <button class="toggle-button" data-filter="all">All</button>

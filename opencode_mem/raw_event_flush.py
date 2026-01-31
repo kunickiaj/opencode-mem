@@ -80,6 +80,14 @@ def flush_raw_events(
         except (TypeError, ValueError):
             return fallback
 
+    def _event_seq_opt(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     meta = store.raw_event_session_meta(opencode_session_id)
     if cwd is None:
         cwd = meta.get("cwd") or os.getcwd()
@@ -97,10 +105,19 @@ def flush_raw_events(
     if not events:
         return {"flushed": 0, "updated_state": 0}
 
-    start_event_seq = _event_seq(events[0].get("event_seq"), last_flushed + 1)
-    last_event_seq = _event_seq(events[-1].get("event_seq"), last_flushed)
+    event_seqs = [_event_seq_opt(e.get("event_seq")) for e in events]
+    event_seqs = [seq for seq in event_seqs if seq is not None]
+    if not event_seqs:
+        return {"flushed": 0, "updated_state": 0}
+
+    # raw_events_since orders by timestamp (ts_mono_ms), which is not necessarily monotonic
+    # w.r.t. event_seq. For batch boundaries and ingestion ordering, we rely on event_seq.
+    start_event_seq = min(event_seqs)
+    last_event_seq = max(event_seqs)
     if last_event_seq < start_event_seq:
         return {"flushed": 0, "updated_state": 0}
+
+    events = sorted(events, key=lambda e: _event_seq(e.get("event_seq"), 0))
     batch_id, status = store.get_or_create_raw_event_flush_batch(
         opencode_session_id=opencode_session_id,
         start_event_seq=start_event_seq,
@@ -115,7 +132,7 @@ def flush_raw_events(
         return {"flushed": 0, "updated_state": 0}
     session_context = build_session_context(events)
     session_context["opencode_session_id"] = opencode_session_id
-    session_context["start_event_seq"] = _event_seq(events[0].get("event_seq"), 0)
+    session_context["start_event_seq"] = start_event_seq
     session_context["end_event_seq"] = last_event_seq
     session_context["flusher"] = "raw_events"
     session_context["extractor_version"] = EXTRACTOR_VERSION

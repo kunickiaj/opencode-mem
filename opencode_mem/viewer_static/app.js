@@ -7,7 +7,6 @@
   const feedMeta = document.getElementById("feedMeta");
   const feedTypeToggle = document.getElementById("feedTypeToggle");
   const feedSearch = document.getElementById("feedSearch");
-  const feedUpdateBanner = document.getElementById("feedUpdateBanner");
   const sessionGrid = document.getElementById("sessionGrid");
   const sessionMeta = document.getElementById("sessionMeta");
   const settingsButton = document.getElementById("settingsButton");
@@ -156,27 +155,6 @@
       refresh();
     }
   });
-  function isUserReadingFeed() {
-    const feedSection = document.querySelector(".feed-section");
-    if (!feedSection) return false;
-    const y = window.scrollY || 0;
-    const threshold = feedSection.offsetTop - 40;
-    return y > threshold;
-  }
-  function isUserInteracting() {
-    const selection = window.getSelection?.();
-    const hasSelection = Boolean(selection && String(selection).trim());
-    return hasSelection;
-  }
-  function showFeedUpdateBanner(newCount) {
-    if (!feedUpdateBanner) return;
-    feedUpdateBanner.textContent = newCount > 0 ? `${newCount} new items · Update` : "New items · Update";
-    feedUpdateBanner.hidden = false;
-  }
-  function hideFeedUpdateBanner() {
-    if (!feedUpdateBanner) return;
-    feedUpdateBanner.hidden = true;
-  }
   function getTheme() {
     const saved = localStorage.getItem("opencode-mem-theme");
     if (saved) return saved;
@@ -371,6 +349,7 @@
     });
   }
   function updateFeedView() {
+    const scrollY = window.scrollY;
     const filteredByType = filterFeedItems(lastFeedItems);
     const visibleItems = filterFeedQuery(filteredByType);
     const filterLabel = formatFeedFilterLabel();
@@ -385,14 +364,8 @@
     if (changed) {
       renderFeed(visibleItems);
     }
+    window.scrollTo({ top: scrollY });
   }
-  feedUpdateBanner?.addEventListener("click", () => {
-    if (!pendingFeedItems) return;
-    lastFeedItems = pendingFeedItems;
-    pendingFeedItems = null;
-    hideFeedUpdateBanner();
-    updateFeedView();
-  });
   function formatFeedFilterLabel() {
     if (feedTypeFilter === "observations") return " · observations";
     if (feedTypeFilter === "summaries") return " · session summaries";
@@ -1181,6 +1154,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const isFiltered = !!(project && totalsFiltered);
     const events = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
     const packEvent = events.find((evt) => String(evt?.event || "") === "pack") || null;
+    const recentEvent = events.find((evt) => String(evt?.event || "") === "recent") || null;
+    const recentKindsEvent = events.find((evt) => String(evt?.event || "") === "recent_kinds") || null;
+    const searchEvent = events.find((evt) => String(evt?.event || "") === "search") || null;
     const packCount = Number(packEvent?.count || 0);
     const recentPacks = Array.isArray(usagePayload?.recent_packs) ? usagePayload.recent_packs : [];
     const latestPack = recentPacks.length ? recentPacks[0] : null;
@@ -1192,6 +1168,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : "";
     const scopeLabel = isFiltered ? "Project" : "All projects";
     sessionMeta.textContent = [scopeLabel, packLine, lastPackLine].filter(Boolean).join(" · ");
+    const scopeSuffix = isFiltered ? " (project)" : "";
+    const usageDetails = [
+      packEvent ? `pack${scopeSuffix}: ${Number(packEvent.count || 0)} events` : null,
+      searchEvent ? `search${scopeSuffix}: ${Number(searchEvent.count || 0)} events` : null,
+      recentEvent ? `recent${scopeSuffix}: ${Number(recentEvent.count || 0)} gets` : null,
+      recentKindsEvent ? `recent_kinds${scopeSuffix}: ${Number(recentKindsEvent.count || 0)} gets` : null
+    ].filter(Boolean).join(" · ");
     const items = [
       {
         label: "Last pack savings",
@@ -1209,6 +1192,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         icon: "archive"
       }
     ];
+    if (sessionGrid && usageDetails) {
+      sessionGrid.title = usageDetails;
+      sessionGrid.style.cursor = "help";
+    }
     items.forEach((item) => {
       const block = createElement("div", "stat");
       const icon = document.createElement("i");
@@ -1425,19 +1412,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           return right - left;
         }
       );
-      const shouldDefer = isSettingsOpen() || isUserReadingFeed() || isUserInteracting() || Boolean(pendingFeedItems);
-      if (shouldDefer && lastFeedItems.length) {
-        pendingFeedItems = feedItems;
-        lastFeedFilteredCount = filteredCount;
-        const byType = filterFeedItems(feedItems);
-        const visiblePending = filterFeedQuery(byType);
-        const byTypeCurrent = filterFeedItems(lastFeedItems);
-        const visibleCurrent = filterFeedQuery(byTypeCurrent);
-        const newCount = countNewItems(visiblePending, visibleCurrent);
-        showFeedUpdateBanner(newCount);
-        setRefreshStatus("idle");
-        return;
-      }
       const incomingNewCount = countNewItems(feedItems, lastFeedItems);
       if (incomingNewCount) {
         const seen = new Set(lastFeedItems.map(itemKey));
@@ -1447,7 +1421,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         });
       }
       pendingFeedItems = null;
-      hideFeedUpdateBanner();
       lastFeedItems = feedItems;
       lastFeedFilteredCount = filteredCount;
       updateFeedView();

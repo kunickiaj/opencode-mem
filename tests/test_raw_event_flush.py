@@ -111,3 +111,53 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert row["status"] == "completed"
+
+
+def test_flush_raw_events_handles_ts_mono_reordering(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_id="evt-0",
+        event_type="user_prompt",
+        payload={"type": "user_prompt", "prompt_text": "Hello"},
+        ts_wall_ms=100,
+        ts_mono_ms=100.0,
+    )
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_id="evt-1",
+        event_type="tool.execute.after",
+        payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "a"}},
+        ts_wall_ms=200,
+        ts_mono_ms=10.0,
+    )
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_id="evt-2",
+        event_type="tool.execute.after",
+        payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "b"}},
+        ts_wall_ms=300,
+        ts_mono_ms=50.0,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_ingest(payload: dict[str, object]) -> None:
+        captured["events"] = payload.get("events")
+
+    with patch("opencode_mem.raw_event_flush.ingest", fake_ingest):
+        result = flush_raw_events(
+            store,
+            opencode_session_id="sess",
+            cwd=str(tmp_path),
+            project="test",
+            started_at="2026-01-01T00:00:00Z",
+            max_events=None,
+        )
+
+    assert result["flushed"] == 3
+    assert store.raw_event_flush_state("sess") == 2
+
+    ingested_events = captured.get("events")
+    assert isinstance(ingested_events, list)
+    assert [int(e.get("event_seq")) for e in ingested_events] == [0, 1, 2]

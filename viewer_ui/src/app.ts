@@ -12,7 +12,6 @@ const feedList = document.getElementById('feedList');
 const feedMeta = document.getElementById('feedMeta');
 const feedTypeToggle = document.getElementById('feedTypeToggle');
 const feedSearch = document.getElementById('feedSearch') as HTMLInputElement | null;
-const feedUpdateBanner = document.getElementById('feedUpdateBanner') as HTMLButtonElement | null;
 const sessionGrid = document.getElementById('sessionGrid');
 const sessionMeta = document.getElementById('sessionMeta');
 const settingsButton = document.getElementById('settingsButton');
@@ -113,8 +112,9 @@ let lastFeedItems: any[] = [];
 let lastFeedFilteredCount = 0;
 let feedQuery = '';
 
+// Previously used for a manual "apply new items" banner.
+// Kept null to preserve compatibility with older builds, but unused now.
 let pendingFeedItems: any[] | null = null;
-let pendingNewCount = 0;
 let refreshState: 'idle' | 'refreshing' | 'paused' | 'error' = 'idle';
 
 const newItemKeys = new Set<string>();
@@ -179,33 +179,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-function isUserReadingFeed() {
-  const feedSection = document.querySelector('.feed-section') as HTMLElement | null;
-  if (!feedSection) return false;
-  const y = window.scrollY || 0;
-  // If the user is at/near the feed section and not at the very top, assume reading.
-  const threshold = feedSection.offsetTop - 40;
-  return y > threshold;
-}
-
 function isUserInteracting() {
+  const hovered = Boolean(document.querySelector('.feed-item:hover'));
   const selection = window.getSelection?.();
   const hasSelection = Boolean(selection && String(selection).trim());
-  return hasSelection;
+  return hovered || hasSelection;
 }
 
-function showFeedUpdateBanner(newCount: number) {
-  if (!feedUpdateBanner) return;
-  pendingNewCount = newCount;
-  feedUpdateBanner.textContent =
-    newCount > 0 ? `${newCount} new items · Update` : 'New items · Update';
-  (feedUpdateBanner as any).hidden = false;
-}
 
-function hideFeedUpdateBanner() {
-  if (!feedUpdateBanner) return;
-  (feedUpdateBanner as any).hidden = true;
-}
 
 // Theme management
 function getTheme() {
@@ -440,6 +421,7 @@ function filterFeedQuery(items: any[]) {
 }
 
 function updateFeedView() {
+  const scrollY = window.scrollY;
   const filteredByType = filterFeedItems(lastFeedItems);
   const visibleItems = filterFeedQuery(filteredByType);
   const filterLabel = formatFeedFilterLabel();
@@ -459,15 +441,10 @@ function updateFeedView() {
   if (changed) {
     renderFeed(visibleItems);
   }
+  window.scrollTo({ top: scrollY });
 }
 
-feedUpdateBanner?.addEventListener('click', () => {
-  if (!pendingFeedItems) return;
-  lastFeedItems = pendingFeedItems;
-  pendingFeedItems = null;
-  hideFeedUpdateBanner();
-  updateFeedView();
-});
+
 
 function formatFeedFilterLabel() {
   if (feedTypeFilter === 'observations') return ' · observations';
@@ -1498,6 +1475,9 @@ function renderSessionSummary(summary: any, usagePayload: any, project: string) 
 
   const events = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
   const packEvent = events.find((evt: any) => String(evt?.event || '') === 'pack') || null;
+  const recentEvent = events.find((evt: any) => String(evt?.event || '') === 'recent') || null;
+  const recentKindsEvent = events.find((evt: any) => String(evt?.event || '') === 'recent_kinds') || null;
+  const searchEvent = events.find((evt: any) => String(evt?.event || '') === 'search') || null;
   const packCount = Number(packEvent?.count || 0);
   const recentPacks = Array.isArray(usagePayload?.recent_packs)
     ? usagePayload.recent_packs
@@ -1513,6 +1493,16 @@ function renderSessionSummary(summary: any, usagePayload: any, project: string) 
   const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : '';
   const scopeLabel = isFiltered ? 'Project' : 'All projects';
   sessionMeta.textContent = [scopeLabel, packLine, lastPackLine]
+    .filter(Boolean)
+    .join(' · ');
+
+  const scopeSuffix = isFiltered ? ' (project)' : '';
+  const usageDetails = [
+    packEvent ? `pack${scopeSuffix}: ${Number(packEvent.count || 0)} events` : null,
+    searchEvent ? `search${scopeSuffix}: ${Number(searchEvent.count || 0)} events` : null,
+    recentEvent ? `recent${scopeSuffix}: ${Number(recentEvent.count || 0)} gets` : null,
+    recentKindsEvent ? `recent_kinds${scopeSuffix}: ${Number(recentKindsEvent.count || 0)} gets` : null,
+  ]
     .filter(Boolean)
     .join(' · ');
 
@@ -1535,6 +1525,11 @@ function renderSessionSummary(summary: any, usagePayload: any, project: string) 
       icon: 'archive',
     },
   ];
+
+  if (sessionGrid && usageDetails) {
+    (sessionGrid as any).title = usageDetails;
+    (sessionGrid as any).style.cursor = 'help';
+  }
   items.forEach((item) => {
     const block = createElement('div', 'stat');
     const icon = document.createElement('i');
@@ -1787,24 +1782,7 @@ async function loadFeed() {
         return right - left;
       },
     );
-    const shouldDefer =
-      isSettingsOpen() ||
-      isUserReadingFeed() ||
-      isUserInteracting() ||
-      Boolean(pendingFeedItems);
-
-    if (shouldDefer && lastFeedItems.length) {
-      pendingFeedItems = feedItems;
-      lastFeedFilteredCount = filteredCount;
-      const byType = filterFeedItems(feedItems);
-      const visiblePending = filterFeedQuery(byType);
-      const byTypeCurrent = filterFeedItems(lastFeedItems);
-      const visibleCurrent = filterFeedQuery(byTypeCurrent);
-      const newCount = countNewItems(visiblePending, visibleCurrent);
-      showFeedUpdateBanner(newCount);
-      setRefreshStatus('idle');
-      return;
-    }
+    // Always apply; keep scroll stable via updateFeedView().
 
     // Track newly appearing items for a brief highlight.
     const incomingNewCount = countNewItems(feedItems, lastFeedItems);
@@ -1817,7 +1795,6 @@ async function loadFeed() {
     }
 
     pendingFeedItems = null;
-    hideFeedUpdateBanner();
     lastFeedItems = feedItems;
     lastFeedFilteredCount = filteredCount;
     updateFeedView();
