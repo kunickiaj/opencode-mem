@@ -1149,10 +1149,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         throw new Error(message);
       }
       settingsStatus.textContent = "Saved";
-      setTimeout(() => {
-        settingsStatus.textContent = "Ready";
-      }, 1500);
-      refresh();
+      closeSettings();
     } catch {
       settingsStatus.textContent = "Save failed";
     } finally {
@@ -1335,3 +1332,4 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   refresh();
   startPolling();
 })();
+//# sourceMappingURL=app.js.map

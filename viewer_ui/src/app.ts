@@ -1441,10 +1441,7 @@ async function saveSettings() {
       throw new Error(message);
     }
     settingsStatus.textContent = 'Saved';
-    setTimeout(() => {
-      settingsStatus.textContent = 'Ready';
-    }, 1500);
-    refresh();
+    closeSettings();
   } catch {
     settingsStatus.textContent = 'Save failed';
   } finally {
