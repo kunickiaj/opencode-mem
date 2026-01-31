@@ -292,9 +292,10 @@ def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> N
         "opencode_mem.cli_app.discover_peers_via_mdns",
         lambda: [{"host": "192.168.1.22", "port": 7337, "properties": {"device_id": "peer-1"}}],
     )
-    monkeypatch.setattr("opencode_mem.sync_daemon.sync_pass_preflight", lambda store: None)
+    monkeypatch.setattr("opencode_mem.sync.sync_pass.sync_pass_preflight", lambda store: None)
     monkeypatch.setattr(
-        "opencode_mem.sync_daemon.sync_once", lambda store, peer, addresses, **k: {"ok": True}
+        "opencode_mem.sync.sync_pass.sync_once",
+        lambda store, peer, addresses, **k: {"ok": True},
     )
     result = runner.invoke(app, ["sync", "once", "--db-path", str(db_path)])
     assert result.exit_code == 0

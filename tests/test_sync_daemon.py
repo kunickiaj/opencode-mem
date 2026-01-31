@@ -7,12 +7,11 @@ from typing import cast
 
 import pytest
 
-from opencode_mem import db, sync_daemon
+from opencode_mem import db
 from opencode_mem.store import MemoryStore, ReplicationOp
-from opencode_mem.sync import http_client, replication
+from opencode_mem.sync import http_client, replication, sync_pass
 from opencode_mem.sync.discovery import update_peer_addresses
 from opencode_mem.sync_api import build_sync_handler
-from opencode_mem.sync_daemon import sync_once
 from opencode_mem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
@@ -122,7 +121,7 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
 
         store_a = MemoryStore(tmp_path / "a.sqlite")
         try:
-            result = sync_once(store_a, server_device_id, [f"http://127.0.0.1:{port}"])
+            result = sync_pass.sync_once(store_a, server_device_id, [f"http://127.0.0.1:{port}"])
             assert result["ok"] is True
 
             cursor_row = store_a.conn.execute(
@@ -239,11 +238,11 @@ def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) 
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync_daemon.ensure_device_identity",
+            "opencode_mem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync_daemon.build_auth_headers",
+            "opencode_mem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 
@@ -287,7 +286,7 @@ def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) 
 
         monkeypatch.setattr(http_client, "request_json", fake_request_json)
 
-        result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
         assert result["ok"] is True
 
         row = store.conn.execute(
@@ -310,11 +309,11 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync_daemon.ensure_device_identity",
+            "opencode_mem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync_daemon.build_auth_headers",
+            "opencode_mem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 
@@ -331,7 +330,7 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
 
         monkeypatch.setattr(http_client, "request_json", fake_request_json)
 
-        result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
         assert result["ok"] is True
         assert result["ops_in"] == 0
     finally:
@@ -353,7 +352,7 @@ def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> Non
 
         monkeypatch.setattr(store, "migrate_legacy_import_keys", lambda *, limit: 0)
         monkeypatch.setattr(store, "backfill_replication_ops", lambda *, limit: 0)
-        monkeypatch.setattr(sync_daemon, "mdns_enabled", lambda: False)
+        monkeypatch.setattr(sync_pass.discovery, "mdns_enabled", lambda: False)
 
         called: list[str] = []
 
@@ -361,9 +360,9 @@ def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> Non
             called.append(str(peer_device_id))
             return {"ok": True, "peer_device_id": str(peer_device_id)}
 
-        monkeypatch.setattr(sync_daemon, "run_sync_pass", fake_run_sync_pass)
+        monkeypatch.setattr(sync_pass, "run_sync_pass", fake_run_sync_pass)
 
-        results = sync_daemon.sync_daemon_tick(store)
+        results = sync_pass.sync_daemon_tick(store)
         assert {item.get("peer_device_id") for item in results} == {"peer-1", "peer-2"}
         assert set(called) == {"peer-1", "peer-2"}
     finally:

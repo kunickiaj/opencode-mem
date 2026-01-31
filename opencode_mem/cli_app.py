@@ -86,7 +86,8 @@ from .sync.discovery import (
     set_peer_project_filter,
     update_peer_addresses,
 )
-from .sync_daemon import run_sync_daemon, run_sync_pass, sync_pass_preflight
+from .sync.sync_pass import run_sync_pass, sync_pass_preflight
+from .sync_daemon import run_sync_daemon
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT

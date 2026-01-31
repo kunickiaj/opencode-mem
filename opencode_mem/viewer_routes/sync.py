@@ -9,7 +9,7 @@ from urllib.parse import parse_qs
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
 from ..sync.discovery import load_peer_addresses, normalize_address
-from ..sync_daemon import sync_once
+from ..sync.sync_pass import sync_once
 from ..sync_identity import ensure_device_identity, load_public_key
 
 

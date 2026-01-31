@@ -2,216 +2,20 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import json
-import os
 import socket
 import threading
 import traceback
 from http.server import HTTPServer
 from pathlib import Path
-from typing import Any, cast
-from urllib.parse import urlencode
 
 from . import db
-from .store import MemoryStore, ReplicationOp
-from .sync import http_client, replication
+from .store import MemoryStore
 from .sync.discovery import (
     advertise_mdns,
-    discover_peers_via_mdns,
-    load_peer_addresses,
-    mdns_addresses_for_peer,
     mdns_enabled,
-    record_peer_success,
-    record_sync_attempt,
-    select_dial_addresses,
-    update_peer_addresses,
 )
-from .sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
-from .sync_auth import build_auth_headers
+from .sync_api import build_sync_handler
 from .sync_identity import ensure_device_identity
-
-
-def sync_pass_preflight(
-    store: MemoryStore,
-    *,
-    legacy_limit: int = 2000,
-    replication_backfill_limit: int = 200,
-) -> None:
-    store.migrate_legacy_import_keys(limit=legacy_limit)
-    store.backfill_replication_ops(limit=replication_backfill_limit)
-
-
-def run_sync_pass(
-    store: MemoryStore,
-    peer_device_id: str,
-    *,
-    mdns_entries: list[dict[str, Any]] | None = None,
-    limit: int = 200,
-) -> dict[str, Any]:
-    if mdns_entries is None:
-        mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
-    stored = load_peer_addresses(store.conn, peer_device_id)
-    mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
-    if mdns_addresses:
-        update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
-        stored = load_peer_addresses(store.conn, peer_device_id)
-    dial_addresses = select_dial_addresses(stored=stored, mdns=mdns_addresses)
-    return sync_once(store, peer_device_id, dial_addresses, limit=limit)
-
-
-def sync_once(
-    store: MemoryStore,
-    peer_device_id: str,
-    addresses: list[str],
-    *,
-    limit: int = 200,
-) -> dict[str, Any]:
-    pinned_row = store.conn.execute(
-        "SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?",
-        (peer_device_id,),
-    ).fetchone()
-    pinned_fingerprint = str(pinned_row["pinned_fingerprint"]) if pinned_row else ""
-    if not pinned_fingerprint:
-        return {"ok": False, "error": "peer not pinned"}
-    last_applied, last_acked = replication.get_replication_cursor(store, peer_device_id)
-    keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
-    keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
-    device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
-    error: str | None = None
-    for address in addresses:
-        base_url = http_client.build_base_url(address)
-        if not base_url:
-            continue
-        try:
-            status_url = f"{base_url}/v1/status"
-            status_headers = build_auth_headers(
-                device_id=device_id,
-                method="GET",
-                url=status_url,
-                body_bytes=b"",
-                keys_dir=keys_dir,
-            )
-            status_code, status_payload = http_client.request_json(
-                "GET",
-                status_url,
-                headers=status_headers,
-            )
-            if status_code != 200 or not status_payload:
-                detail = status_payload.get("error") if isinstance(status_payload, dict) else None
-                suffix = f" ({status_code}: {detail})" if detail else f" ({status_code})"
-                raise RuntimeError(f"peer status failed{suffix}")
-            if status_payload.get("fingerprint") != pinned_fingerprint:
-                raise RuntimeError("peer fingerprint mismatch")
-            query = urlencode({"since": last_applied or "", "limit": limit})
-            get_url = f"{base_url}/v1/ops?{query}"
-            get_headers = build_auth_headers(
-                device_id=device_id,
-                method="GET",
-                url=get_url,
-                body_bytes=b"",
-                keys_dir=keys_dir,
-            )
-            status, payload = http_client.request_json("GET", get_url, headers=get_headers)
-            if status != 200 or payload is None:
-                detail = payload.get("error") if isinstance(payload, dict) else None
-                suffix = f" ({status}: {detail})" if detail else f" ({status})"
-                raise RuntimeError(f"peer ops fetch failed{suffix}")
-            ops = payload.get("ops")
-            if not isinstance(ops, list):
-                raise RuntimeError("invalid ops response")
-            received_at = dt.datetime.now(dt.UTC).isoformat()
-            applied = store.apply_replication_ops(
-                cast(list[ReplicationOp], ops),
-                source_device_id=peer_device_id,
-                received_at=received_at,
-            )
-            if ops:
-                last_op = ops[-1] if isinstance(ops[-1], dict) else None
-                op_id = str(last_op.get("op_id") or "") if last_op else ""
-                created_at = str(last_op.get("created_at") or "") if last_op else ""
-                if op_id and created_at:
-                    local_next = store.compute_cursor(created_at, op_id)
-                    replication.set_replication_cursor(
-                        store,
-                        peer_device_id,
-                        last_applied=local_next,
-                    )
-                    last_applied = local_next
-
-            effective_last_acked = store.normalize_outbound_cursor(last_acked, device_id=device_id)
-            outbound_ops, outbound_cursor = store.load_replication_ops_since(
-                effective_last_acked,
-                limit=limit,
-                device_id=device_id,
-            )
-            outbound_ops, outbound_cursor = store.filter_replication_ops_for_sync(
-                outbound_ops, peer_device_id=peer_device_id
-            )
-            post_url = f"{base_url}/v1/ops"
-            if outbound_ops:
-                batches = replication.chunk_ops_by_size(
-                    outbound_ops,
-                    max_bytes=MAX_SYNC_BODY_BYTES,
-                )
-                for batch in batches:
-                    body = {"ops": batch}
-                    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-                    post_headers = build_auth_headers(
-                        device_id=device_id,
-                        method="POST",
-                        url=post_url,
-                        body_bytes=body_bytes,
-                        keys_dir=keys_dir,
-                    )
-                    status, payload = http_client.request_json(
-                        "POST",
-                        post_url,
-                        headers=post_headers,
-                        body=body,
-                        body_bytes=body_bytes,
-                    )
-                    if status != 200 or payload is None:
-                        detail = payload.get("error") if isinstance(payload, dict) else None
-                        suffix = f" ({status}: {detail})" if detail else f" ({status})"
-                        raise RuntimeError(f"peer ops push failed{suffix}")
-                if outbound_cursor:
-                    replication.set_replication_cursor(
-                        store,
-                        peer_device_id,
-                        last_acked=outbound_cursor,
-                    )
-                    last_acked = outbound_cursor
-
-            record_peer_success(store.conn, peer_device_id, base_url)
-            record_sync_attempt(
-                store.conn,
-                peer_device_id,
-                ok=True,
-                ops_in=applied.get("inserted", 0) + applied.get("updated", 0),
-                ops_out=len(outbound_ops),
-            )
-            return {
-                "ok": True,
-                "address": base_url,
-                "ops_in": len(ops),
-                "ops_out": len(outbound_ops),
-            }
-        except Exception as exc:
-            error = f"{base_url}: {exc}"
-            continue
-    record_sync_attempt(store.conn, peer_device_id, ok=False, error=error)
-    return {"ok": False, "error": error}
-
-
-def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
-    sync_pass_preflight(store)
-    rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
-    mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        peer_device_id = str(row["peer_device_id"])
-        results.append(run_sync_pass(store, peer_device_id, mdns_entries=mdns_entries))
-    return results
 
 
 def run_sync_daemon(
@@ -245,12 +49,14 @@ def run_sync_daemon(
             store.close()
         zeroconf = advertise_mdns(device_id=device_id, port=port)
     stop = stop_event or threading.Event()
+    from .sync import sync_pass as _sync_pass
+
     try:
         while not stop.wait(interval_s):
             store = MemoryStore(db_path or db.DEFAULT_DB_PATH)
             try:
                 try:
-                    sync_daemon_tick(store)
+                    _sync_pass.sync_daemon_tick(store)
                     store.set_sync_daemon_ok()
                 except Exception as exc:
                     tb = traceback.format_exc()
