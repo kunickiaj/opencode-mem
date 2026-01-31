@@ -8,17 +8,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import viewer_raw_events
+from . import viewer_assets, viewer_raw_events
 from .config import load_config  # noqa: F401
 from .db import DEFAULT_DB_PATH
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
-from .viewer_html import VIEWER_HTML
 from .viewer_http import (
     read_json_body,
     reject_cross_origin,
-    send_html_response,
+    send_bytes_response,
     send_json_response,
 )
 from .viewer_routes import config as viewer_routes_config
@@ -70,8 +69,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def _send_json(self, payload: dict, status: int = 200) -> None:
         send_json_response(self, payload, status=status)
 
-    def _send_html(self) -> None:
-        send_html_response(self, VIEWER_HTML)
+    def _send_index_html(self) -> None:
+        send_bytes_response(
+            self,
+            viewer_assets.get_index_html_bytes(),
+            content_type="text/html; charset=utf-8",
+        )
+
+    def _send_static_asset(self, asset_path: str) -> None:
+        try:
+            body, content_type = viewer_assets.get_static_asset_bytes(asset_path)
+        except (FileNotFoundError, ValueError):
+            self.send_response(404)
+            self.end_headers()
+            return
+        send_bytes_response(self, body, content_type=content_type)
 
     def _read_json(self) -> dict[str, Any] | None:
         return read_json_body(self)
@@ -86,7 +98,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            self._send_html()
+            self._send_index_html()
+            return
+
+        if parsed.path.startswith("/assets/"):
+            self._send_static_asset(parsed.path[len("/assets/") :])
             return
 
         is_api = parsed.path.startswith("/api/")

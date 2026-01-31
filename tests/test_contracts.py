@@ -21,6 +21,19 @@ def _wait_for_http_json(url: str, *, timeout_s: float = 3.0) -> Any:
     raise AssertionError(f"failed to fetch JSON from {url}: {last_error!r}")
 
 
+def _wait_for_http_text(url: str, *, timeout_s: float = 3.0) -> str:
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with closing(urllib.request.urlopen(url, timeout=1)) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            time.sleep(0.05)
+    raise AssertionError(f"failed to fetch text from {url}: {last_error!r}")
+
+
 def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     """Contract test between viewer HTML and backend routes.
 
@@ -38,6 +51,15 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     start_viewer(host=host, port=port, background=True)
 
     base = f"http://{host}:{port}"
+
+    html = _wait_for_http_text(base + "/")
+    assert "opencode-mem viewer" in html
+
+    js = _wait_for_http_text(base + "/assets/app.js")
+    assert "fetch(" in js
+
+    favicon = _wait_for_http_text(base + "/assets/favicon.svg")
+    assert "<svg" in favicon
 
     stats = _wait_for_http_json(base + "/api/stats")
     assert isinstance(stats, dict)

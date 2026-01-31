@@ -27,6 +27,20 @@ def send_html_response(handler: BaseHTTPRequestHandler, html: str) -> None:
     handler.wfile.write(body)
 
 
+def send_bytes_response(
+    handler: BaseHTTPRequestHandler,
+    body: bytes,
+    *,
+    content_type: str,
+    status: int = 200,
+) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     length = int(handler.headers.get("Content-Length", "0") or 0)
     raw = handler.rfile.read(length).decode("utf-8") if length else ""
