@@ -1364,28 +1364,38 @@ function renderSessionSummary(summary: any, usagePayload: any, project: string) 
   const recentPacks = Array.isArray(usagePayload?.recent_packs)
     ? usagePayload.recent_packs
     : [];
-  const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : '';
+  const latestPack = recentPacks.length ? recentPacks[0] : null;
+  const lastPackAt = latestPack?.created_at || '';
+
+  const packTokens = Number(latestPack?.tokens_read || 0);
+  const savedTokens = Number(latestPack?.tokens_saved || 0);
+  const reductionPercent = formatReductionPercent(savedTokens, packTokens);
 
   const packLine = packCount ? `${packCount} packs` : 'No packs yet';
   const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : '';
-  const baseLine = total ? `${total} injections so far` : 'No injections yet';
-  sessionMeta.textContent = [baseLine, packLine, lastPackLine].filter(Boolean).join(' · ');
+  const scopeLabel = isFiltered ? 'Project' : 'All projects';
+  sessionMeta.textContent = [scopeLabel, packLine, lastPackLine]
+    .filter(Boolean)
+    .join(' · ');
 
   const items: Array<{ label: string; value: any; icon: string }> = [
     {
-      label: isFiltered ? 'Savings (project)' : 'Savings',
-      value: Number(usage?.tokens_saved || 0),
+      label: 'Last pack savings',
+      value: latestPack
+        ? `${savedTokens.toLocaleString()} (${reductionPercent})`
+        : 'n/a',
       icon: 'trending-up',
     },
     {
-      label: isFiltered ? 'Reduction (project)' : 'Reduction',
-      value: formatReductionPercent(usage?.tokens_saved, usage?.tokens_read),
-      icon: 'percent',
+      label: 'Last pack size',
+      value: latestPack ? packTokens.toLocaleString() : 'n/a',
+      icon: 'package',
     },
-    { label: 'Prompts', value: summary.prompts || 0, icon: 'message-square' },
-    { label: 'Memories', value: summary.memories || 0, icon: 'brain' },
-    { label: 'Artifacts', value: summary.artifacts || 0, icon: 'package' },
-    { label: 'Observations', value: summary.observations || 0, icon: 'file-text' },
+    {
+      label: 'Packs',
+      value: packCount || 0,
+      icon: 'archive',
+    },
   ];
   items.forEach((item) => {
     const block = createElement('div', 'stat');
