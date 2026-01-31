@@ -1357,8 +1357,14 @@ function renderConfigModal(payload: any) {
       ? `Default: ${defaultValue}`
       : '';
   }
-  if (settingsEffective)
-    settingsEffective.textContent = payload.effective ?? '';
+  if (settingsEffective) {
+    const effective = payload.effective;
+    if (effective && typeof effective === 'object') {
+      settingsEffective.textContent = JSON.stringify(effective, null, 2);
+    } else {
+      settingsEffective.textContent = String(effective ?? '');
+    }
+  }
 }
 
 function openSettings() {
