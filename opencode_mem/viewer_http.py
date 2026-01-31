@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
@@ -36,6 +37,8 @@ def send_bytes_response(
 ) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
+    if os.environ.get("OPENCODE_MEM_VIEWER_NO_CACHE") == "1":
+        handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
