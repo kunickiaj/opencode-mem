@@ -31,6 +31,28 @@
         --body-base-end: #efe3d2;
         --dot-color: rgba(0, 0, 0, 0.03);
       }
+
+      header .logo {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 84px;
+        height: 84px;
+        border-radius: 20px;
+        background: rgba(0, 0, 0, 0.03);
+        border: 1px solid rgba(0, 0, 0, 0.08);
+      }
+      header .logo svg {
+        display: block;
+      }
+      [data-theme="dark"] header .logo {
+        background: rgba(255, 255, 255, 0.06);
+        border-color: rgba(255, 255, 255, 0.14);
+        color: rgba(233, 238, 245, 0.85);
+      }
+      [data-theme="light"] header .logo {
+        color: rgba(26, 32, 40, 0.72);
+      }
       @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
           --bg: #1a1918;
@@ -147,6 +169,17 @@
         font-family: "Fraunces", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
         font-size: 32px;
         letter-spacing: 0.6px;
+      }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .brand-row h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: 0.4px;
+        opacity: 0.88;
       }
       .meta {
         color: var(--muted);
@@ -1091,15 +1124,29 @@
     </style>
   </head>
   <body>
-    <header>
+      <header>
       <div class="header-grid">
-        <div class="header-left">
-          <h1>opencode-mem viewer</h1>
-          <div class="header-tags">
-            <span class="pill alt">auto-refresh</span>
-            <span class="refresh" id="refreshStatus"><span class="dot"></span>refreshing…</span>
-          </div>
-        </div>
+         <div class="header-left">
+            <div class="brand-row">
+              <span class="logo" aria-hidden="true" style="line-height: 0;">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="60" height="60" shape-rendering="crispEdges" aria-hidden="true">
+                  <!-- Option 1: stacked outlines -->
+                  <!-- Stack upward: front card is most opaque -->
+                  <path d="M3 8h13v13H3z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.18"/>
+                  <path d="M4.5 6.5h13v13h-13z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.30"/>
+                  <path d="M6 5h13v13H6z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.56"/>
+                  <path d="M7.5 3.5h13v13h-13z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.82"/>
+                </svg>
+              </span>
+              <h1>opencode-mem viewer</h1>
+            </div>
+
+
+           <div class="header-tags">
+             <span class="pill alt">auto-refresh</span>
+             <span class="refresh" id="refreshStatus"><span class="dot"></span>refreshing…</span>
+           </div>
+         </div>
         <div class="header-right">
           <div class="meta" id="metaLine">Loading stats…</div>
           <div style="display: flex; gap: 8px; align-items: center;">
