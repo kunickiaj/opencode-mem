@@ -595,6 +595,11 @@
         z-index: 4;
         padding: 24px;
       }
+      @media (max-height: 720px) {
+        .modal {
+          align-items: flex-start;
+        }
+      }
       .modal-backdrop[hidden],
       .modal[hidden] {
         display: none;
@@ -612,6 +617,8 @@
         display: flex;
         flex-direction: column;
         gap: 16px;
+        max-height: min(84vh, 720px);
+        overflow: hidden;
       }
       .modal-header {
         display: flex;
@@ -634,6 +641,10 @@
         display: flex;
         flex-direction: column;
         gap: 12px;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 6px;
       }
       .field {
         display: flex;
@@ -654,18 +665,44 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
+        flex-shrink: 0;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+      }
+
+      @media (max-width: 520px) {
+        .modal {
+          padding: 14px;
+        }
+        .modal-card {
+          padding: 16px;
+          border-radius: 18px;
+          max-height: min(88vh, 720px);
+        }
       }
       .settings-save {
-        border: none;
-        background: var(--accent);
-        color: #fffaf3;
+        border: 1px solid rgba(31, 111, 92, 0.3);
+        background: rgba(31, 111, 92, 0.12);
+        color: var(--accent);
         padding: 8px 14px;
         border-radius: 12px;
         font-size: 12px;
         cursor: pointer;
+        transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
       }
       .settings-save:hover {
-        background: #1a5e4f;
+        transform: translateY(-1px);
+        border-color: rgba(31, 111, 92, 0.5);
+        background: rgba(31, 111, 92, 0.18);
+      }
+      [data-theme="dark"] .settings-save {
+        border-color: rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(233, 238, 245, 0.9);
+      }
+      [data-theme="dark"] .settings-save:hover {
+        border-color: rgba(255, 255, 255, 0.24);
+        background: rgba(255, 255, 255, 0.10);
       }
       .settings-save:disabled {
         opacity: 0.6;
@@ -697,10 +734,15 @@
       }
       .feed-card-header {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+      }
+
+      .feed-card-header > .feed-header {
+        flex: 1;
+        overflow: hidden;
       }
       .feed-item:hover {
         transform: translateY(-1px);
@@ -712,10 +754,29 @@
         align-items: center;
         gap: 10px;
         flex-wrap: wrap;
+        min-width: 0;
+      }
+
+      .feed-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+        align-self: flex-start;
+      }
+
+      .feed-actions .small {
+        white-space: nowrap;
+      }
+
+      .feed-actions .feed-age {
+        margin-top: -1px;
       }
       .feed-title {
         font-weight: 600;
         font-size: 15px;
+        flex: 1;
+        min-width: 0;
       }
       .feed-controls {
         display: flex;
@@ -724,6 +785,33 @@
         gap: 12px;
         flex-wrap: wrap;
         margin-bottom: 12px;
+      }
+      .feed-controls-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .feed-search {
+        min-width: 220px;
+        flex: 1;
+        max-width: 420px;
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text);
+        font-size: 12px;
+        outline: none;
+      }
+      .feed-search:focus {
+        border-color: rgba(31, 111, 92, 0.6);
+        box-shadow: 0 0 0 3px rgba(31, 111, 92, 0.12);
+      }
+      [data-theme="dark"] .feed-search:focus {
+        border-color: rgba(77, 212, 180, 0.8);
+        box-shadow: 0 0 0 3px rgba(77, 212, 180, 0.18);
       }
       .feed-controls .section-meta {
         margin: 0;
@@ -740,6 +828,9 @@
         border-radius: 999px;
         border: 1px solid var(--border);
         background: rgba(0, 0, 0, 0.02);
+      }
+      .feed-actions .feed-toggle {
+        margin-top: -2px;
       }
       [data-theme="dark"] .feed-toggle {
         background: rgba(255, 255, 255, 0.04);
@@ -769,10 +860,27 @@
         color: var(--muted);
         font-size: 12px;
       }
+
+      @media (max-width: 720px) {
+        .feed-card-header {
+          flex-wrap: wrap;
+        }
+        .feed-actions {
+          width: 100%;
+          justify-content: flex-end;
+        }
+      }
       .feed-body {
         font-size: 13px;
         line-height: 1.5;
       }
+      .feed-body.clamp {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .feed-body.clamp-3 { -webkit-line-clamp: 3; }
+      .feed-body.clamp-5 { -webkit-line-clamp: 5; }
       .feed-body.facts {
         display: flex;
         flex-direction: column;
@@ -854,6 +962,33 @@
         gap: 8px;
         align-items: flex-start;
         justify-content: space-between;
+      }
+      .feed-footer-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .feed-expand {
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.02);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+      .feed-expand:hover {
+        background: rgba(31, 111, 92, 0.10);
+        color: var(--accent);
+      }
+      [data-theme="dark"] .feed-expand {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      [data-theme="dark"] .feed-expand:hover {
+        background: rgba(77, 212, 180, 0.14);
+        color: #4dd4b4;
       }
       .feed-footer-left {
         display: flex;
@@ -1042,10 +1177,10 @@
         </div>
         <div class="modal-footer">
           <div class="small" id="settingsStatus">Ready</div>
-          <button class="settings-save" id="settingsSave">Save</button>
+            <button class="settings-save" id="settingsSave">Save</button>
+          </div>
         </div>
       </div>
-    </div>
     <main>
       <div class="summary-row">
         <section>
@@ -1080,17 +1215,17 @@
           <div class="peer-list" id="syncPeers"></div>
           <div class="attempts-list" id="syncAttempts"></div>
         </div>
-        <div class="pairing-card" id="syncPairing" hidden>
+          <div class="pairing-card" id="syncPairing" hidden>
           <div class="peer-title">
             <strong>Pairing payload</strong>
             <div class="peer-actions">
-              <button id="pairingCopy">Copy pairing command</button>
-            </div>
+            <button id="pairingCopy">Copy pairing payload</button>
+          </div>
           </div>
           <div class="pairing-body">
             <pre id="pairingPayload">Loading…</pre>
           </div>
-          <div class="peer-meta" id="pairingHint">Copy/paste this on the other device to pair.</div>
+          <div class="peer-meta" id="pairingHint">Copy this payload and paste it into opencode-mem on the other device.</div>
         </div>
       </section>
 
@@ -1098,10 +1233,13 @@
           <h2>Memory feed</h2>
           <div class="feed-controls">
             <div class="section-meta" id="feedMeta">Loading memories…</div>
-            <div class="feed-toggle" id="feedTypeToggle">
-              <button class="toggle-button" data-filter="all">All</button>
-              <button class="toggle-button" data-filter="observations">Observations</button>
-              <button class="toggle-button" data-filter="summaries">Summaries</button>
+            <div class="feed-controls-right">
+              <input class="feed-search" id="feedSearch" placeholder="Search title/body/tags…" />
+              <div class="feed-toggle" id="feedTypeToggle">
+                <button class="toggle-button" data-filter="all">All</button>
+                <button class="toggle-button" data-filter="observations">Observations</button>
+                <button class="toggle-button" data-filter="summaries">Summaries</button>
+              </div>
             </div>
           </div>
           <div class="feed-list" id="feedList"></div>

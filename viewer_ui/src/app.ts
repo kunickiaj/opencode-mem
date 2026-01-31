@@ -11,6 +11,7 @@ const metaLine = document.getElementById('metaLine');
 const feedList = document.getElementById('feedList');
 const feedMeta = document.getElementById('feedMeta');
 const feedTypeToggle = document.getElementById('feedTypeToggle');
+const feedSearch = document.getElementById('feedSearch') as HTMLInputElement | null;
 const sessionGrid = document.getElementById('sessionGrid');
 const sessionMeta = document.getElementById('sessionMeta');
 const settingsButton = document.getElementById('settingsButton');
@@ -88,6 +89,7 @@ let configDefaults: Record<string, any> = {};
 let configPath = '';
 let currentProject = '';
 const itemViewState = new Map();
+const itemExpandState = new Map<string, boolean>();
 const FEED_FILTER_KEY = 'opencode-mem-feed-filter';
 const FEED_FILTERS = ['all', 'observations', 'summaries'];
 
@@ -106,6 +108,9 @@ let refreshInFlight = false;
 let refreshQueued = false;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let lastFeedSignature = '';
+let lastFeedItems: any[] = [];
+let lastFeedFilteredCount = 0;
+let feedQuery = '';
 
 function isSettingsOpen() {
   return Boolean(settingsModal && !settingsModal.hasAttribute('hidden'));
@@ -189,7 +194,7 @@ syncPairingToggle?.addEventListener('click', () => {
   setSyncPairingOpen(next);
   if (next) {
     if (pairingPayload) pairingPayload.textContent = 'Loading…';
-    if (pairingHint) pairingHint.textContent = 'Fetching pairing command…';
+    if (pairingHint) pairingHint.textContent = 'Fetching pairing payload…';
   }
   refresh();
 });
@@ -209,6 +214,11 @@ feedTypeToggle?.addEventListener('click', (event) => {
   if (!target) return;
   const value = target.dataset.filter || 'all';
   setFeedTypeFilter(value);
+});
+
+feedSearch?.addEventListener('input', () => {
+  feedQuery = feedSearch.value || '';
+  updateFeedView();
 });
 
 function formatDate(value: any) {
@@ -292,7 +302,11 @@ function setFeedTypeFilter(value: string) {
   feedTypeFilter = FEED_FILTERS.includes(value) ? value : 'all';
   localStorage.setItem(FEED_FILTER_KEY, feedTypeFilter);
   updateFeedTypeToggle();
-  refresh();
+  if (lastFeedItems.length) {
+    updateFeedView();
+  } else {
+    refresh();
+  }
 }
 
 function updateFeedTypeToggle() {
@@ -316,6 +330,42 @@ function filterFeedItems(items: any[]) {
     );
   }
   return items;
+}
+
+function filterFeedQuery(items: any[]) {
+  const query = normalize(feedQuery);
+  if (!query) return items;
+  return items.filter((item) => {
+    const title = normalize(item?.title);
+    const body = normalize(item?.body_text);
+    const kind = normalize(item?.kind);
+    const tags = parseJsonArray(item?.tags || []).map((t) => normalize(t)).join(' ');
+    const project = normalize(item?.project);
+    const hay = `${title} ${body} ${kind} ${tags} ${project}`.trim();
+    return hay.includes(query);
+  });
+}
+
+function updateFeedView() {
+  const filteredByType = filterFeedItems(lastFeedItems);
+  const visibleItems = filterFeedQuery(filteredByType);
+  const filterLabel = formatFeedFilterLabel();
+
+  const signature = computeFeedSignature(visibleItems);
+  const changed = signature !== lastFeedSignature;
+  lastFeedSignature = signature;
+
+  if (feedMeta) {
+    const filteredLabel =
+      !feedQuery.trim() && lastFeedFilteredCount
+        ? ` · ${lastFeedFilteredCount} observations filtered`
+        : '';
+    const queryLabel = feedQuery.trim() ? ` · matching "${feedQuery.trim()}"` : '';
+    feedMeta.textContent = `${visibleItems.length} items${filterLabel}${queryLabel}${filteredLabel}`;
+  }
+  if (changed) {
+    renderFeed(visibleItems);
+  }
 }
 
 function formatFeedFilterLabel() {
@@ -728,20 +778,38 @@ function renderSyncHealth(syncHealth: any) {
 
 function renderPairing(payload: any) {
   if (!pairingPayload) return;
-  if (!payload) {
-    pairingPayload.textContent = 'No pairing payload available';
+  if (!payload || typeof payload !== 'object') {
+    pairingPayload.textContent = 'Pairing not available';
     if (pairingHint)
       pairingHint.textContent =
-        'Pairing will appear after at least one sync scan.';
+        'Enable sync and retry. (If you just enabled sync, wait a moment and refresh.)';
+    pairingCommandRaw = '';
     return;
   }
 
-  const command = payload.command || '';
-  pairingPayload.textContent = command || 'Pairing not available';
-  pairingCommandRaw = command || '';
+  if (payload.redacted) {
+    pairingPayload.textContent = 'Pairing payload hidden';
+    if (pairingHint)
+      pairingHint.textContent =
+        'Diagnostics are required to view the pairing payload.';
+    pairingCommandRaw = '';
+    return;
+  }
+
+  const addresses = Array.isArray(payload.addresses) ? payload.addresses : [];
+  const safePayload = {
+    ...payload,
+    addresses: isSyncRedactionEnabled()
+      ? addresses.map((address: any) => redactAddress(address))
+      : addresses,
+    public_key: isSyncRedactionEnabled() ? '[redacted]' : payload.public_key,
+  };
+
+  const pretty = JSON.stringify(safePayload, null, 2);
+  pairingPayload.textContent = pretty;
+  pairingCommandRaw = pretty;
   if (pairingHint) {
-    pairingHint.textContent =
-      payload.hint || 'Copy/paste this on the other device to pair.';
+    pairingHint.textContent = 'Copy this payload and paste it into opencode-mem on the other device.';
   }
 }
 
@@ -752,7 +820,7 @@ async function copyPairingCommand() {
     await navigator.clipboard.writeText(command);
     if (pairingCopy) pairingCopy.textContent = 'Copied';
     setTimeout(() => {
-      if (pairingCopy) pairingCopy.textContent = 'Copy pairing command';
+      if (pairingCopy) pairingCopy.textContent = 'Copy pairing payload';
     }, 1200);
   } catch {
     if (pairingCopy) pairingCopy.textContent = 'Copy failed';
@@ -1031,6 +1099,20 @@ function renderItemViewToggle(
   return toggle;
 }
 
+function shouldClampBody(
+  mode: ItemViewMode,
+  data: { summary: string; narrative: string },
+) {
+  if (mode === 'facts') return false;
+  if (mode === 'summary') return data.summary.length > 260;
+  return data.narrative.length > 320;
+}
+
+function clampClass(mode: ItemViewMode) {
+  if (mode === 'summary') return ['clamp', 'clamp-3'];
+  return ['clamp', 'clamp-5'];
+}
+
 function computeFeedSignature(items: any[]) {
   const parts = items.map(
     (item) =>
@@ -1067,16 +1149,14 @@ function renderFeed(items: any[]) {
       `kind-pill ${kindValue}`.trim(),
       kindValue.replace(/_/g, ' '),
     );
-    titleWrap.append(title, kind);
+    titleWrap.append(kind, title);
 
-    const rightWrap = document.createElement('div');
-    rightWrap.style.display = 'flex';
-    rightWrap.style.alignItems = 'center';
-    rightWrap.style.gap = '10px';
-    rightWrap.style.flexShrink = '0';
+    const rightWrap = createElement('div', 'feed-actions');
 
     const createdAt = formatDate(item.created_at || item.created_at_utc);
-    const age = createElement('div', 'small', createdAt);
+    const age = createElement('div', 'small feed-age', createdAt);
+
+    const footerRight = createElement('div', 'feed-footer-right');
 
     let bodyNode: HTMLElement = createElement('div', 'feed-body');
 
@@ -1096,12 +1176,57 @@ function renderFeed(items: any[]) {
 
       bodyNode = _renderObservationBody(data, activeMode);
 
+      const setExpandControl = (mode: ItemViewMode) => {
+        footerRight.textContent = '';
+        const expandKey = `${key}:${mode}`;
+        const expanded = itemExpandState.get(expandKey) === true;
+        const canClamp = shouldClampBody(mode, data);
+        if (!canClamp) return;
+
+        const button = createElement(
+          'button',
+          'feed-expand',
+          expanded ? 'Collapse' : 'Expand',
+        ) as HTMLButtonElement;
+        button.addEventListener('click', () => {
+          const next = !(itemExpandState.get(expandKey) === true);
+          itemExpandState.set(expandKey, next);
+          if (next) {
+            bodyNode.classList.remove('clamp', 'clamp-3', 'clamp-5');
+            button.textContent = 'Collapse';
+          } else {
+            bodyNode.classList.add(...clampClass(mode));
+            button.textContent = 'Expand';
+          }
+        });
+        footerRight.appendChild(button);
+      };
+
+      const expandKey = `${key}:${activeMode}`;
+      const expanded = itemExpandState.get(expandKey) === true;
+      const canClamp = shouldClampBody(activeMode, data);
+      if (canClamp && !expanded) {
+        bodyNode.classList.add(...clampClass(activeMode));
+      }
+
+      setExpandControl(activeMode);
+
       const toggle = renderItemViewToggle(modes, activeMode, (mode) => {
         activeMode = mode;
         itemViewState.set(key, mode);
         const nextBody = _renderObservationBody(data, mode);
+
+        const nextExpandKey = `${key}:${mode}`;
+        const nextExpanded = itemExpandState.get(nextExpandKey) === true;
+        const nextCanClamp = shouldClampBody(mode, data);
+        if (nextCanClamp && !nextExpanded) {
+          nextBody.classList.add(...clampClass(mode));
+        }
+
         card.replaceChild(nextBody, bodyNode);
         bodyNode = nextBody;
+
+        setExpandControl(mode);
 
         if (toggle) {
           const buttons = Array.from(toggle.querySelectorAll('.toggle-button'));
@@ -1149,7 +1274,7 @@ function renderFeed(items: any[]) {
     if (tagsWrap.childElementCount) {
       footerLeft.appendChild(tagsWrap);
     }
-    footer.appendChild(footerLeft);
+    footer.append(footerLeft, footerRight);
 
     card.append(header, meta, bodyNode, footer);
     feedList.appendChild(card);
@@ -1192,10 +1317,12 @@ function renderSessionSummary(summary: any) {
   });
 }
 
-function renderConfigModal(defaults: any, config: any) {
-  if (!defaults || !config) return;
+function renderConfigModal(payload: any) {
+  if (!payload || typeof payload !== 'object') return;
+  const defaults = payload.defaults || {};
+  const config = payload.config || {};
   configDefaults = defaults;
-  configPath = config.path || '';
+  configPath = payload.path || '';
 
   const observerProvider = config.observer_provider || '';
   const observerModel = config.observer_model || '';
@@ -1205,7 +1332,7 @@ function renderConfigModal(defaults: any, config: any) {
   const syncEnabled = config.sync_enabled || false;
   const syncHost = config.sync_host || '';
   const syncPort = config.sync_port || '';
-  const syncInterval = config.sync_interval_seconds || '';
+  const syncInterval = config.sync_interval_s || '';
   const syncMdns = config.sync_mdns || false;
 
   if (observerProviderInput) observerProviderInput.value = observerProvider;
@@ -1230,7 +1357,8 @@ function renderConfigModal(defaults: any, config: any) {
       ? `Default: ${defaultValue}`
       : '';
   }
-  if (settingsEffective) settingsEffective.textContent = config.effective ?? '';
+  if (settingsEffective)
+    settingsEffective.textContent = payload.effective ?? '';
 }
 
 function openSettings() {
@@ -1296,7 +1424,7 @@ async function saveSettings() {
       sync_enabled: syncEnabledInput?.checked || false,
       sync_host: syncHostInput?.value || '',
       sync_port: Number(syncPortInput?.value || 0) || '',
-      sync_interval_seconds: Number(syncIntervalInput?.value || 0) || '',
+      sync_interval_s: Number(syncIntervalInput?.value || 0) || '',
       sync_mdns: syncMdnsInput?.checked || false,
     };
     const resp = await fetch('/api/config', {
@@ -1380,21 +1508,9 @@ async function loadFeed() {
         return right - left;
       },
     );
-    const visibleItems = filterFeedItems(feedItems);
-    const filterLabel = formatFeedFilterLabel();
-
-    const signature = computeFeedSignature(visibleItems);
-    const changed = signature !== lastFeedSignature;
-    lastFeedSignature = signature;
-
-    if (feedMeta) {
-      feedMeta.textContent = `${visibleItems.length} items${filterLabel}${
-        filteredCount ? ' · ' + filteredCount + ' observations filtered' : ''
-      }`;
-    }
-    if (changed) {
-      renderFeed(visibleItems);
-    }
+    lastFeedItems = feedItems;
+    lastFeedFilteredCount = filteredCount;
+    updateFeedView();
     if (refreshStatus) {
       refreshStatus.innerHTML =
         "<span class='dot'></span>updated " + new Date().toLocaleTimeString();
@@ -1415,7 +1531,7 @@ async function loadConfig() {
     const resp = await fetch('/api/config');
     if (!resp.ok) return;
     const payload = await resp.json();
-    renderConfigModal(payload.defaults || {}, payload.config || {});
+    renderConfigModal(payload);
     hideSettingsOverrideNotice(payload.config || {});
   } catch {
     // Ignore config load errors.
@@ -1453,9 +1569,7 @@ async function loadSyncStatus() {
 
 async function loadPairing() {
   try {
-    const diag = isSyncDiagnosticsOpen();
-    const diagParam = diag ? '?includeDiagnostics=1' : '';
-    const resp = await fetch(`/api/sync/pairing${diagParam}`);
+    const resp = await fetch('/api/sync/pairing?includeDiagnostics=1');
     if (!resp.ok) return;
     const payload = await resp.json();
     pairingPayloadRaw = payload || null;
