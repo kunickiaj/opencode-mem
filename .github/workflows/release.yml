@@ -21,11 +21,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
       - name: Set up Python
         run: uv python install 3.14
+
+      - name: Build viewer UI bundle
+        run: |
+          cd viewer_ui
+          if [ -f bun.lock ]; then bun install --frozen-lockfile; else bun install; fi
+          bun run build
 
       - name: Build package
         run: uv build

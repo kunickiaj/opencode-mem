@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -640,6 +642,47 @@ def serve(
         stop=stop,
         restart=restart,
     )
+
+
+@app.command()
+def dev(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str = typer.Option(DEFAULT_VIEWER_HOST, help="Host to bind viewer"),
+    port: int = typer.Option(DEFAULT_VIEWER_PORT, help="Port to bind viewer"),
+    ui: bool = typer.Option(True, "--ui/--no-ui", help="Run viewer_ui build watcher"),
+) -> None:
+    """Developer mode: watch the UI bundle and run the viewer."""
+
+    os.environ["OPENCODE_MEM_VIEWER_NO_CACHE"] = "1"
+
+    watcher: subprocess.Popen[Any] | None = None
+    try:
+        if ui:
+            repo_root = Path(__file__).resolve().parent.parent
+            viewer_ui = repo_root / "viewer_ui"
+            if viewer_ui.exists():
+                if not (viewer_ui / "node_modules").exists():
+                    subprocess.run(["bun", "install"], cwd=viewer_ui, check=False)
+                watcher = subprocess.Popen(
+                    ["bun", "run", "build:watch"],
+                    cwd=viewer_ui,
+                    text=True,
+                )
+
+        _serve(
+            db_path=db_path,
+            host=host,
+            port=port,
+            background=False,
+            stop=False,
+            restart=False,
+        )
+    finally:
+        if watcher is not None:
+            try:
+                watcher.terminate()
+            except Exception:
+                return
 
 
 @sync_app.command("enable")
