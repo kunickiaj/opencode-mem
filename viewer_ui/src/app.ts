@@ -789,6 +789,25 @@ function toTitleLabel(value: string) {
 }
 
 function getSummaryObject(item: any): Record<string, any> | null {
+  const preferredKeys = [
+    'request',
+    'outcome',
+    'plan',
+    'completed',
+    'learned',
+    'investigated',
+    'next',
+    'next_steps',
+    'notes',
+  ];
+  const looksLikeSummary = (value: any) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    return preferredKeys.some((key) => {
+      const raw = (value as any)[key];
+      return typeof raw === 'string' && raw.trim().length > 0;
+    });
+  };
+
   const candidate = item?.summary;
   if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
     return candidate;
@@ -796,6 +815,15 @@ function getSummaryObject(item: any): Record<string, any> | null {
   const nested = item?.summary?.summary;
   if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
     return nested;
+  }
+
+  const metadata = item?.metadata_json;
+  if (looksLikeSummary(metadata)) {
+    return metadata;
+  }
+  const metadataNested = metadata?.summary;
+  if (looksLikeSummary(metadataNested)) {
+    return metadataNested;
   }
   return null;
 }

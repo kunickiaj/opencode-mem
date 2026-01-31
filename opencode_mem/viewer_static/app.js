@@ -639,6 +639,24 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     return value.replace(/_/g, " ").split(" ").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ").trim();
   }
   function getSummaryObject(item) {
+    const preferredKeys = [
+      "request",
+      "outcome",
+      "plan",
+      "completed",
+      "learned",
+      "investigated",
+      "next",
+      "next_steps",
+      "notes"
+    ];
+    const looksLikeSummary = (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      return preferredKeys.some((key) => {
+        const raw = value[key];
+        return typeof raw === "string" && raw.trim().length > 0;
+      });
+    };
     const candidate = item?.summary;
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
       return candidate;
@@ -646,6 +664,14 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const nested = item?.summary?.summary;
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
       return nested;
+    }
+    const metadata = item?.metadata_json;
+    if (looksLikeSummary(metadata)) {
+      return metadata;
+    }
+    const metadataNested = metadata?.summary;
+    if (looksLikeSummary(metadataNested)) {
+      return metadataNested;
     }
     return null;
   }
