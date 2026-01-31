@@ -65,6 +65,12 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     assert isinstance(stats, dict)
     assert "database" in stats
 
+    memories = _wait_for_http_json(base + "/api/memories")
+    assert isinstance(memories, dict)
+    assert isinstance(memories.get("items"), list)
+    if memories["items"]:
+        assert "project" in memories["items"][0]
+
     config = _wait_for_http_json(base + "/api/config")
     assert isinstance(config, dict)
     assert "effective" in config

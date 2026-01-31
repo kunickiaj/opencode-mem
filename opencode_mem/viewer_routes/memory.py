@@ -12,6 +12,56 @@ class _ViewerHandler(Protocol):
     def _send_json(self, payload: dict[str, Any], status: int = 200) -> None: ...
 
 
+def _attach_session_fields(store: MemoryStore, items: list[dict[str, Any]]) -> None:
+    session_ids: list[int] = []
+    seen: set[int] = set()
+    for item in items:
+        value = item.get("session_id")
+        if value is None:
+            continue
+        try:
+            sid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if sid in seen:
+            continue
+        seen.add(sid)
+        session_ids.append(sid)
+
+    if not session_ids:
+        return
+
+    placeholders = ",".join("?" for _ in session_ids)
+    rows = store.conn.execute(
+        f"SELECT id, project, cwd FROM sessions WHERE id IN ({placeholders})",
+        session_ids,
+    ).fetchall()
+    by_session: dict[int, dict[str, str]] = {}
+    for row in rows:
+        try:
+            sid = int(row["id"])
+        except (TypeError, ValueError):
+            continue
+        project_raw = row["project"] or ""
+        project = store._project_basename(project_raw.strip()) if project_raw else ""
+        cwd = row["cwd"] or ""
+        by_session[sid] = {"project": project, "cwd": cwd}
+
+    for item in items:
+        value = item.get("session_id")
+        if value is None:
+            continue
+        try:
+            sid = int(value)
+        except (TypeError, ValueError):
+            continue
+        fields = by_session.get(sid)
+        if not fields:
+            continue
+        item.setdefault("project", fields.get("project") or "")
+        item.setdefault("cwd", fields.get("cwd") or "")
+
+
 def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: str) -> bool:
     # Compatibility endpoints used by the bundled web UI.
     if path == "/api/memories":
@@ -55,8 +105,9 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "feature",
             "refactor",
         ]
-        filters = {"project": project} if project else None
-        items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=filters)
+        obs_filters = {"project": project} if project else None
+        items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=obs_filters)
+        _attach_session_fields(store, items)
         handler._send_json({"items": items})
         return True
 
@@ -68,6 +119,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         if project:
             filters["project"] = project
         items = store.recent(limit=limit, filters=filters)
+        _attach_session_fields(store, items)
         handler._send_json({"items": items})
         return True
 
@@ -142,12 +194,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 handler._send_json({"error": "token_budget must be int"}, status=400)
                 return True
         project = params.get("project", [None])[0]
-        filters = {"project": project} if project else None
+        pack_filters = {"project": project} if project else None
         pack = store.build_memory_pack(
             context=context,
             limit=limit,
             token_budget=token_budget_value,
-            filters=filters,
+            filters=pack_filters,
         )
         handler._send_json(pack)
         return True
@@ -163,6 +215,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         if project:
             filters["project"] = project
         items = store.recent(limit=limit, filters=filters if filters else None)
+        _attach_session_fields(store, items)
         handler._send_json({"items": items})
         return True
 
