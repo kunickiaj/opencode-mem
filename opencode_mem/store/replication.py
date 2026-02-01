@@ -880,16 +880,6 @@ def _sanitize_inbound_replication_op(
             raise ValueError("identity_mismatch")
         if source_device_id != "local" and (op_device_id == "local" or clock_device_id == "local"):
             raise ValueError("identity_mismatch")
-        entity_id = str(sanitized.get("entity_id") or "")
-        import_key = ""
-        payload = sanitized.get("payload")
-        if isinstance(payload, dict):
-            import_key = str(payload.get("import_key") or "")
-        candidate_keys = [k for k in [entity_id, import_key] if k]
-        for key in candidate_keys:
-            prefix_device_id = _legacy_import_key_device_id(key)
-            if prefix_device_id and prefix_device_id != source_device_id:
-                raise ValueError("identity_mismatch")
 
         if str(sanitized.get("entity_type") or "") == "memory_item":
             entity_id = str(sanitized.get("entity_id") or "")

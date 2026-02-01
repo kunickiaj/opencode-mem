@@ -287,6 +287,45 @@ def test_sync_once_splits_push_batches_on_peer_payload_too_large(
         os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)
 
 
+def test_apply_replication_ops_allows_cross_device_legacy_entity_id(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        sender_device_id = "dev-a"
+        origin_device_id = "dev-b"
+        legacy_id = f"legacy:{origin_device_id}:memory_item:123"
+        op = {
+            "op_id": "op-1",
+            "entity_type": "memory_item",
+            "entity_id": legacy_id,
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "kind": "note",
+                "title": "Hello",
+                "body_text": "World",
+                "import_key": legacy_id,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "clock": {
+                "rev": 1,
+                "updated_at": "2026-01-01T00:00:00Z",
+                "device_id": sender_device_id,
+            },
+            "device_id": sender_device_id,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+
+        result = store.apply_replication_ops(
+            cast(list[ReplicationOp], [op]),
+            source_device_id=sender_device_id,
+            received_at="2026-01-01T00:00:00Z",
+        )
+        assert result["inserted"] == 1
+    finally:
+        store.close()
+
+
 def _make_op(op_id: str, entity_id: str, payload: dict | None = None) -> dict:
     return {
         "op_id": op_id,
