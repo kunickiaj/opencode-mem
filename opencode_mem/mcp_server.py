@@ -16,6 +16,7 @@ except Exception as exc:  # pragma: no cover
 
 from .config import load_config
 from .db import DEFAULT_DB_PATH
+from .memory_kinds import ALLOWED_MEMORY_KINDS, validate_memory_kind
 from .store import MemoryStore
 from .utils import resolve_project
 
@@ -191,6 +192,7 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             resolved_project = project or default_project
+            kind_normalized = validate_memory_kind(kind)
             # Use client cwd if we could, but for now we default to server's cwd
             # Ideally client should pass cwd too, but project is the critical bit.
             session_id = store.start_session(
@@ -204,7 +206,7 @@ def build_server() -> FastMCP:
             )
             mem_id = store.remember(
                 session_id,
-                kind=kind,
+                kind=kind_normalized,
                 title=title,
                 body_text=body,
                 confidence=confidence,
@@ -226,17 +228,7 @@ def build_server() -> FastMCP:
     def memory_schema() -> dict[str, Any]:
         return {
             "kinds": [
-                "session_summary",
-                "observation",
-                "entities",
-                "note",
-                "decision",
-                "discovery",
-                "change",
-                "feature",
-                "bugfix",
-                "refactor",
-                "exploration",
+                *ALLOWED_MEMORY_KINDS,
             ],
             "fields": {
                 "title": "short text",

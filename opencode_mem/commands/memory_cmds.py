@@ -8,6 +8,8 @@ import os
 import typer
 from rich import print
 
+from ..memory_kinds import validate_memory_kind
+
 
 def search_cmd(
     *,
@@ -88,6 +90,7 @@ def remember_cmd(
 
     store = store_from_path(db_path)
     try:
+        kind = validate_memory_kind(kind)
         resolved_project = resolve_project(os.getcwd(), project, all_projects=False)
         session_id = store.start_session(
             cwd=os.getcwd(),

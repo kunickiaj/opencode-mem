@@ -1,3 +1,4 @@
+import datetime as dt
 import http.client
 import json
 import sqlite3
@@ -58,6 +59,91 @@ def test_recent_filters(tmp_path: Path) -> None:
     observations = store.recent(limit=10, filters={"kind": "observation"})
     assert len(observations) == 1
     assert observations[0]["kind"] == "observation"
+
+
+def test_rejects_invalid_memory_kind(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    try:
+        try:
+            store.remember(session, kind="project", title="Bad kind", body_text="...")
+        except ValueError as exc:
+            assert "project" in str(exc)
+        else:
+            raise AssertionError("Expected ValueError")
+    finally:
+        store.end_session(session)
+        store.close()
+
+
+def test_migrates_legacy_project_kind_to_decision(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCODE_MEM_EMBEDDING_DISABLED", "1")
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session_id = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    created_at = dt.datetime.now(dt.UTC).isoformat()
+    try:
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id,
+                kind,
+                title,
+                body_text,
+                confidence,
+                tags_text,
+                active,
+                created_at,
+                updated_at,
+                metadata_json,
+                deleted_at,
+                rev,
+                import_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                "project",
+                "Legacy",
+                "Body",
+                0.5,
+                "",
+                created_at,
+                created_at,
+                db.to_json({}),
+                None,
+                1,
+                "legacy-import-key",
+            ),
+        )
+        store.conn.commit()
+
+        # Re-run schema init to apply the one-off normalization.
+        db.initialize_schema(store.conn)
+
+        row = store.conn.execute(
+            "SELECT kind FROM memory_items WHERE import_key = ?",
+            ("legacy-import-key",),
+        ).fetchone()
+        assert row is not None
+        assert row["kind"] == "decision"
+    finally:
+        store.end_session(session_id)
+        store.close()
 
 
 def test_replication_schema_bootstrap(tmp_path: Path) -> None:

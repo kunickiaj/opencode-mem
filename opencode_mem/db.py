@@ -347,6 +347,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_prompts_import_key ON user_prompts(import_key)"
     )
 
+    # One-off kind normalization for legacy/accidental values.
+    # This runs on startup and is idempotent.
+    conn.execute("UPDATE memory_items SET kind = 'decision' WHERE lower(trim(kind)) = 'project'")
+
     if os.getenv("OPENCODE_MEM_EMBEDDING_DISABLED", "").lower() not in {"1", "true", "yes"}:
         _load_sqlite_vec(conn)
         conn.execute(

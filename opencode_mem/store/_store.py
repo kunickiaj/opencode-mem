@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .. import db
 from ..config import load_config
+from ..memory_kinds import validate_memory_kind
 from ..summarizer import Summary
 from . import maintenance as store_maintenance
 from . import raw_events as store_raw_events
@@ -724,6 +725,7 @@ class MemoryStore:
         tags: Iterable[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
+        kind = validate_memory_kind(kind)
         created_at = self._now_iso()
         tags_text = " ".join(sorted(set(tags or [])))
         metadata_payload = dict(metadata or {})
@@ -801,6 +803,7 @@ class MemoryStore:
         confidence: float = 0.5,
         metadata: dict[str, Any] | None = None,
     ) -> int:
+        kind = validate_memory_kind(kind)
         created_at = self._now_iso()
         tags_text = " ".join(
             store_tags.derive_tags(
