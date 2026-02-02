@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+from . import __version__
 
 logger = logging.getLogger("opencode_mem.observer")
 
@@ -80,7 +83,20 @@ def _now_ms() -> int:
 
 
 def _build_codex_headers(access_token: str, account_id: str | None) -> dict[str, str]:
-    headers = {"authorization": f"Bearer {access_token}"}
+    # Mirror OpenCode's Codex transport headers as closely as we can.
+    # These are safe metadata headers; do not add anything that could leak secrets.
+    originator = os.getenv("OPENCODE_MEM_CODEX_ORIGINATOR", "opencode")
+    user_agent = os.getenv(
+        "OPENCODE_MEM_CODEX_USER_AGENT",
+        f"opencode-mem/{__version__} ({platform.system()} {platform.release()}; {platform.machine()})",
+    )
+
+    headers = {
+        "authorization": f"Bearer {access_token}",
+        "originator": originator,
+        "User-Agent": user_agent,
+        "accept": "text/event-stream",
+    }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     return headers

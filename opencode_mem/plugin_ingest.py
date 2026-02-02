@@ -405,6 +405,12 @@ def ingest(payload: dict[str, Any]) -> None:
         recent_files=post.get("recent_files") or "",
     )
     response = _get_observer().observe(observer_context)
+    flusher = session_context.get("flusher")
+    if isinstance(flusher, str) and flusher == "raw_events":
+        # Raw-event flushing must be lossless. If the observer call fails (no raw output),
+        # raise so the flush batch is marked error and the cursor is not advanced.
+        if not response.raw:
+            raise RuntimeError("observer failed during raw-event flush")
     parsed = response.parsed
     discovery_parts = []
     if latest_prompt:

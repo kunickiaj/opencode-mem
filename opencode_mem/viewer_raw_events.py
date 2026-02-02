@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 import threading
 import time
+import logging
 
 from .db import DEFAULT_DB_PATH
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class RawEventAutoFlusher:
@@ -156,7 +161,19 @@ class RawEventSweeper:
                         started_at=None,
                         max_events=None,
                     )
-                except Exception:
+                except Exception as exc:
+                    # Never silently swallow flush failures: they can cause the backlog to grow
+                    # indefinitely and mask observer/auth issues.
+                    logger.exception(
+                        "raw event sweeper flush failed",
+                        extra={"opencode_session_id": opencode_session_id},
+                        exc_info=exc,
+                    )
+                    if not logging.getLogger().hasHandlers():
+                        print(
+                            f"opencode-mem: raw event sweeper flush failed for {opencode_session_id}: {exc}",
+                            file=sys.stderr,
+                        )
                     continue
         finally:
             store.close()

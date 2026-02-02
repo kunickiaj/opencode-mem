@@ -273,6 +273,20 @@ class ObserverClient:
         headers = _build_codex_headers(self.codex_access, self.codex_account_id)
         payload = _build_codex_payload(self.model, prompt, self.max_tokens)
         endpoint = _resolve_codex_endpoint()
+
+        def _exc_chain(exc: BaseException, *, limit: int = 4) -> str:
+            parts: list[str] = []
+            seen: set[int] = set()
+            cur: BaseException | None = exc
+            while cur is not None and id(cur) not in seen and len(parts) < limit:
+                seen.add(id(cur))
+                message = str(cur)
+                parts.append(
+                    f"{cur.__class__.__name__}: {message}" if message else cur.__class__.__name__
+                )
+                cur = cur.__cause__ or cur.__context__
+            return " | ".join(parts)
+
         try:
             import httpx
 
@@ -293,6 +307,13 @@ class ObserverClient:
                     except Exception:
                         error_text = None
                     error_summary = _redact_text(error_text or "")
+                    request_id = None
+                    try:
+                        request_id = response.headers.get("x-request-id") or response.headers.get(
+                            "x-openai-request-id"
+                        )
+                    except Exception:
+                        request_id = None
                     message = "observer codex oauth call failed"
                     if error_summary:
                         message = f"{message}: {error_summary}"
@@ -304,6 +325,7 @@ class ObserverClient:
                             "endpoint": endpoint,
                             "status": response.status_code,
                             "error": error_summary,
+                            "request_id": request_id,
                         },
                     )
                     return None
@@ -323,14 +345,25 @@ class ObserverClient:
             message = "observer codex oauth call failed"
             if error_summary:
                 message = f"{message}: {error_summary}"
+
+            request_url = None
+            try:
+                req = getattr(response, "request", None) or getattr(exc, "request", None)
+                request_url = str(getattr(req, "url", None) or "") or None
+            except Exception:
+                request_url = None
+
             logger.exception(
                 message,
                 extra={
                     "provider": self.provider,
                     "model": self.model,
                     "endpoint": endpoint,
+                    "request_url": request_url,
                     "status": status_code,
                     "error": error_summary,
+                    "exc_chain": _exc_chain(exc),
+                    "exc_type": exc.__class__.__name__,
                 },
                 exc_info=exc,
             )

@@ -161,3 +161,58 @@ def test_flush_raw_events_handles_ts_mono_reordering(tmp_path: Path) -> None:
     ingested_events = captured.get("events")
     assert isinstance(ingested_events, list)
     assert [int(e.get("event_seq")) for e in ingested_events] == [0, 1, 2]
+
+
+def test_flush_raw_events_marks_batch_error_when_observer_fails(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_id="evt-0",
+        event_type="user_prompt",
+        payload={"type": "user_prompt", "prompt_text": "Hello"},
+        ts_wall_ms=100,
+        ts_mono_ms=1.0,
+    )
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_id="evt-1",
+        event_type="tool.execute.after",
+        payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "x"}},
+        ts_wall_ms=200,
+        ts_mono_ms=2.0,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raw = None
+
+    with (
+        patch("opencode_mem.plugin_ingest.OBSERVER") as observer,
+        patch("opencode_mem.plugin_ingest.capture_pre_context") as pre,
+        patch("opencode_mem.plugin_ingest.capture_post_context") as post,
+    ):
+        observer.observe.return_value = mock_response
+        pre.return_value = {"project": "test"}
+        post.return_value = {"git_diff": "", "recent_files": ""}
+
+        with patch.dict("os.environ", {"OPENCODE_MEM_DB": str(tmp_path / "mem.sqlite")}):
+            try:
+                flush_raw_events(
+                    store,
+                    opencode_session_id="sess",
+                    cwd=str(tmp_path),
+                    project="test",
+                    started_at="2026-01-01T00:00:00Z",
+                    max_events=None,
+                )
+            except RuntimeError as exc:
+                assert "observer failed" in str(exc)
+            else:
+                raise AssertionError("Expected flush_raw_events to raise")
+
+    assert store.raw_event_flush_state("sess") == -1
+    row = store.conn.execute(
+        "SELECT status FROM raw_event_flush_batches WHERE opencode_session_id = ? AND extractor_version = ?",
+        ("sess", EXTRACTOR_VERSION),
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "error"
