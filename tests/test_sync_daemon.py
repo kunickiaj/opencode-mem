@@ -472,6 +472,74 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
         store.close()
 
 
+def test_sync_once_advances_last_acked_when_outbound_filtered(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "opencode_mem.sync.sync_pass.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.endswith("/v1/status"):
+                return 200, {"fingerprint": "fp-peer"}
+            if "/v1/ops?" in url:
+                return 200, {"ops": []}
+            return 200, {"inserted": 0, "updated": 0}
+
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
+
+        outbound_cursor = "2026-02-01T00:00:00Z|op-1"
+
+        def fake_load_replication_ops_since(cursor, *, limit, device_id):
+            return [
+                {
+                    "op_id": "op-1",
+                    "entity_type": "memory_item",
+                    "entity_id": "k1",
+                    "op_type": "upsert",
+                    "payload": {},
+                    "clock": {
+                        "rev": 1,
+                        "updated_at": "2026-02-01T00:00:00Z",
+                        "device_id": "dev-local",
+                    },
+                    "device_id": "dev-local",
+                    "created_at": "2026-02-01T00:00:00Z",
+                }
+            ], outbound_cursor
+
+        def fake_filter_replication_ops_for_sync(ops, *, peer_device_id=None):
+            return [], outbound_cursor
+
+        monkeypatch.setattr(store, "load_replication_ops_since", fake_load_replication_ops_since)
+        monkeypatch.setattr(
+            store, "filter_replication_ops_for_sync", fake_filter_replication_ops_for_sync
+        )
+
+        result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        assert result["ok"] is True
+
+        row = store.conn.execute(
+            "SELECT last_acked_cursor FROM replication_cursors WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert row["last_acked_cursor"] == outbound_cursor
+    finally:
+        store.close()
+
+
 def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:

@@ -184,13 +184,13 @@ def sync_once(
                         keys_dir=keys_dir,
                         ops=cast(list[ReplicationOp], batch),
                     )
-                if outbound_cursor:
-                    replication.set_replication_cursor(
-                        store,
-                        peer_device_id,
-                        last_acked=outbound_cursor,
-                    )
-                    last_acked = outbound_cursor
+            if outbound_cursor:
+                replication.set_replication_cursor(
+                    store,
+                    peer_device_id,
+                    last_acked=outbound_cursor,
+                )
+                last_acked = outbound_cursor
 
             discovery.record_peer_success(store.conn, peer_device_id, base_url)
             discovery.record_sync_attempt(
