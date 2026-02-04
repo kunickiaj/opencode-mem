@@ -2,6 +2,19 @@
 
 This file is for agentic coding tools working in this repo.
 
+## Public repository safety
+
+Assume this repository is public and everything you write (code, docs, tests, and commit messages)
+will be published.
+
+- Never add proprietary/internal references (private domains/hostnames, internal project codenames,
+  employee emails, vendor/customer confidential identifiers, etc.).
+- Never add secrets (API keys, tokens, passwords, private keys), even as examples. Use obvious
+  placeholders instead.
+- Keep local artifacts out of git (`.venv/`, `.tmp/`, `*.sqlite`, logs, caches).
+- If you discover sensitive content already tracked or in git history: stop and propose a
+  remediation plan (remove from tree + consider history rewrite).
+
 If you are about to run commands, prefer `uv run ...` (no manual venv activation needed).
 
 ## Stack (what this repo uses)
