@@ -66,6 +66,12 @@ def rename_project_cmd(
         result = store.rename_project(old_name, new_name, dry_run=not apply)
     finally:
         store.close()
+
+    error = result.get("error")
+    if error:
+        print(f"[red]Error:[/red] {error}")
+        raise SystemExit(2)
+
     action = "Will rename" if result.get("dry_run") else "Renamed"
     print(
         f"[bold]{action}[/bold] [cyan]{result.get('old_name')}[/cyan] → [green]{result.get('new_name')}[/green]"
