@@ -579,3 +579,83 @@ def normalize_projects(store: MemoryStore, *, dry_run: bool = True) -> dict[str,
         )
     store.conn.commit()
     return preview
+
+
+def rename_project(
+    store: MemoryStore, old_name: str, new_name: str, *, dry_run: bool = True
+) -> dict[str, Any]:
+    """Rename a project across sessions, raw_event_sessions, and usage_events.
+
+    Matches both exact project names and path-like values whose basename matches
+    (e.g. old_name="product-context" also matches "/Users/.../product-context").
+    """
+
+    old_basename = store._project_basename(old_name)
+    if not old_basename:
+        return {"dry_run": dry_run, "error": "empty old_name"}
+
+    # Match exact name OR any path ending in the old basename
+    session_rows = store.conn.execute(
+        """
+        SELECT id, project FROM sessions
+        WHERE project = ?
+           OR project LIKE ?
+           OR project LIKE ?
+        """,
+        (old_basename, f"%/{old_basename}", f"%\\{old_basename}"),
+    ).fetchall()
+
+    raw_rows = store.conn.execute(
+        """
+        SELECT opencode_session_id, project FROM raw_event_sessions
+        WHERE project = ?
+           OR project LIKE ?
+           OR project LIKE ?
+        """,
+        (old_basename, f"%/{old_basename}", f"%\\{old_basename}"),
+    ).fetchall()
+
+    usage_rows = store.conn.execute(
+        "SELECT id, metadata_json FROM usage_events WHERE event = 'pack'"
+    ).fetchall()
+    usage_updates: list[tuple[str, int]] = []
+    for row in usage_rows:
+        metadata = db.from_json(row["metadata_json"]) if row["metadata_json"] else {}
+        if not isinstance(metadata, dict):
+            continue
+        project_value = metadata.get("project")
+        if not isinstance(project_value, str):
+            continue
+        proj_base = store._project_basename(project_value.strip())
+        if proj_base == old_basename:
+            metadata["project"] = new_name
+            usage_updates.append((db.to_json(metadata), int(row["id"])))
+
+    preview = {
+        "dry_run": dry_run,
+        "old_name": old_basename,
+        "new_name": new_name,
+        "sessions_to_update": len(session_rows),
+        "raw_event_sessions_to_update": len(raw_rows),
+        "usage_events_to_update": len(usage_updates),
+    }
+    if dry_run:
+        return preview
+
+    for row in session_rows:
+        store.conn.execute(
+            "UPDATE sessions SET project = ? WHERE id = ?",
+            (new_name, int(row["id"])),
+        )
+    for row in raw_rows:
+        store.conn.execute(
+            "UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?",
+            (new_name, str(row["opencode_session_id"])),
+        )
+    for metadata_json, usage_id in usage_updates:
+        store.conn.execute(
+            "UPDATE usage_events SET metadata_json = ? WHERE id = ?",
+            (metadata_json, usage_id),
+        )
+    store.conn.commit()
+    return preview
