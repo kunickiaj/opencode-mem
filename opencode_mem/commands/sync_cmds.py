@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -56,9 +57,11 @@ def sync_enable_cmd(
 ) -> None:
     """Enable sync and initialize device identity."""
 
+    keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
+    keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     store = store_from_path(db_path)
     try:
-        device_id, fingerprint = ensure_device_identity(store.conn)
+        device_id, fingerprint = ensure_device_identity(store.conn, keys_dir=keys_dir)
     finally:
         store.close()
 
@@ -243,6 +246,8 @@ def sync_pair_cmd(
     pick_advertise_host,
     load_config,
     accept: str | None,
+    accept_file: str | None,
+    payload_only: bool,
     name: str | None,
     address: str | None,
     include: str | None,
@@ -258,12 +263,40 @@ def sync_pair_cmd(
             return []
         return [p.strip() for p in value.split(",") if p.strip()]
 
+    keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
+    keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     store = store_from_path(db_path)
     try:
-        if not accept and (include or exclude or all_projects or default_projects):
-            print("[red]Project filters can only be set when accepting a payload[/red]")
+        accept_mode_requested = accept is not None or accept_file is not None
+        if payload_only and (accept or accept_file):
+            print("[red]--payload-only cannot be combined with --accept or --accept-file[/red]")
             raise typer.Exit(code=1)
-        if accept:
+
+        if accept and accept_file:
+            print("[red]Use only one of --accept or --accept-file[/red]")
+            raise typer.Exit(code=1)
+
+        accept_text = accept
+        if accept_file:
+            try:
+                if accept_file == "-":
+                    accept_text = sys.stdin.read()
+                else:
+                    accept_text = Path(accept_file).expanduser().read_text(encoding="utf-8")
+            except OSError as exc:
+                print(f"[red]Failed to read pairing payload from {accept_file}: {exc}[/red]")
+                raise typer.Exit(code=1) from exc
+
+        if accept_mode_requested and not (accept_text or "").strip():
+            print("[red]Empty pairing payload; provide JSON via --accept or --accept-file[/red]")
+            raise typer.Exit(code=1)
+
+        if not accept_text and (include or exclude or all_projects or default_projects):
+            print(
+                "[red]Project filters are outbound-only and must be set on the device running --accept[/red]"
+            )
+            raise typer.Exit(code=1)
+        if accept_text:
             if all_projects and default_projects:
                 print("[red]Use only one of --all or --default[/red]")
                 raise typer.Exit(code=1)
@@ -272,7 +305,7 @@ def sync_pair_cmd(
                 raise typer.Exit(code=1)
 
             try:
-                payload = json.loads(accept)
+                payload = json.loads(accept_text)
             except json.JSONDecodeError as exc:
                 print(f"[red]Invalid pairing payload: {exc}[/red]")
                 raise typer.Exit(code=1) from exc
@@ -328,8 +361,8 @@ def sync_pair_cmd(
             print(f"[green]Paired with {device_id}[/green]")
             return
 
-        device_id, fingerprint = ensure_device_identity(store.conn)
-        public_key = load_public_key()
+        device_id, fingerprint = ensure_device_identity(store.conn, keys_dir=keys_dir)
+        public_key = load_public_key(keys_dir)
         if not public_key:
             print("[red]Public key missing[/red]")
             raise typer.Exit(code=1)
@@ -361,11 +394,21 @@ def sync_pair_cmd(
             "addresses": addresses,
         }
         payload_text = json.dumps(payload, ensure_ascii=False)
+        if payload_only:
+            sys.stdout.write(f"{payload_text}\n")
+            return
+
         escaped = payload_text.replace("'", "'\\''")
         print("[bold]Pairing payload[/bold]")
         print(payload_text)
-        print("Share this with your other device and run:")
+        print("On the other device, save this JSON to pairing.json, then run:")
+        print("  opencode-mem sync pair --accept-file pairing.json")
+        print("If you prefer inline JSON, run:")
         print(f"  opencode-mem sync pair --accept '{escaped}'")
+        print("For machine-friendly output next time, run:")
+        print("  opencode-mem sync pair --payload-only")
+        print("On the accepting device, --include/--exclude only control what it sends to peers.")
+        print("This device does not yet enforce incoming project filters.")
     finally:
         store.close()
 

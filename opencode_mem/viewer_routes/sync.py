@@ -12,6 +12,12 @@ from ..sync.discovery import load_peer_addresses, normalize_address
 from ..sync.sync_pass import sync_once
 from ..sync_identity import ensure_device_identity, load_public_key
 
+PAIRING_FILTER_HINT = (
+    "Run this on another device with opencode-mem sync pair --accept '<payload>'. "
+    "On that accepting device, --include/--exclude only control what it sends to peers. "
+    "This device does not yet enforce incoming project filters."
+)
+
 
 def _attempt_status(attempt: dict[str, Any]) -> str:
     if attempt.get("ok"):
@@ -244,7 +250,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         }
         config = _viewer.load_config()
         if not include_diagnostics:
-            handler._send_json({"redacted": True})
+            handler._send_json({"redacted": True, "pairing_filter_hint": PAIRING_FILTER_HINT})
             return True
         keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
         keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
@@ -265,6 +271,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "device_id": device_id,
             "fingerprint": fingerprint,
             "public_key": public_key,
+            "pairing_filter_hint": PAIRING_FILTER_HINT,
             "addresses": [
                 f"{host}:{config.sync_port}"
                 for host in pick_advertise_hosts(config.sync_advertise)

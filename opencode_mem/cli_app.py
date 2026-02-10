@@ -760,26 +760,35 @@ def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database"
 
 @sync_app.command("pair")
 def sync_pair(
-    accept: str | None = typer.Option(None, help="Accept pairing payload (JSON)"),
+    accept: str | None = typer.Option(None, help="Accept pairing payload JSON from another device"),
+    accept_file: str | None = typer.Option(
+        None,
+        help="Accept pairing payload from file path, or '-' for stdin (shell-friendly)",
+    ),
+    payload_only: bool = typer.Option(
+        False,
+        "--payload-only",
+        help="When generating pairing payload, print JSON only (no instructions)",
+    ),
     name: str | None = typer.Option(None, help="Label for the peer"),
     address: str | None = typer.Option(None, help="Override peer address (host:port)"),
     include: str | None = typer.Option(
         None,
-        help="Comma-separated project basenames to sync with this peer (accept only)",
+        help="With --accept, outbound-only allowlist: projects this device may push to that peer",
     ),
     exclude: str | None = typer.Option(
         None,
-        help="Comma-separated project basenames to exclude for this peer (accept only)",
+        help="With --accept, outbound-only blocklist: projects this device will not push to that peer",
     ),
     all_projects: bool = typer.Option(
         False,
         "--all",
-        help="Override peer project filter to sync all projects with this peer (accept only)",
+        help="With --accept, outbound-only: this device pushes all projects to that peer",
     ),
     default_projects: bool = typer.Option(
         False,
         "--default",
-        help="Clear peer project filter override and inherit global defaults (accept only)",
+        help="With --accept, outbound-only: use this device's global push filters for that peer",
     ),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
@@ -795,6 +804,8 @@ def sync_pair(
         pick_advertise_host=pick_advertise_host,
         load_config=load_config,
         accept=accept,
+        accept_file=accept_file,
+        payload_only=payload_only,
         name=name,
         address=address,
         include=include,

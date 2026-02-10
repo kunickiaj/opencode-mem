@@ -18,6 +18,14 @@ def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
     os.chmod(private_key_path, 0o600)
 
 
+def _write_fake_keys_by_dir(private_key_path: Path, public_key_path: Path) -> None:
+    private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = private_key_path.parent.name
+    private_key_path.write_text(f"private-{suffix}")
+    public_key_path.write_text(f"public-{suffix}")
+    os.chmod(private_key_path, 0o600)
+
+
 def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     config_path = tmp_path / "config.json"
@@ -223,6 +231,48 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_sync_pair_accept_file_stores_peer(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    payload_path = tmp_path / "pairing.json"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    public_key = "public-key"
+    payload = {
+        "device_id": "peer-file-1",
+        "fingerprint": sync_identity.fingerprint_public_key(public_key),
+        "public_key": public_key,
+        "address": "peer-file:7337",
+        "addresses": ["peer-file:7337"],
+    }
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "pair",
+            "--accept-file",
+            str(payload_path),
+            "--db-path",
+            str(db_path),
+        ],
+        env=env,
+    )
+    assert result.exit_code == 0
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT peer_device_id, pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-file-1",),
+        ).fetchone()
+        assert row is not None
+        assert row["pinned_fingerprint"] == payload["fingerprint"]
+        assert row["public_key"] == payload["public_key"]
+    finally:
+        conn.close()
+
+
 def test_sync_pair_prints_copyable_command(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     monkeypatch.setattr("opencode_mem.cli_app.pick_advertise_hosts", lambda value: ["127.0.0.1"])
@@ -232,7 +282,150 @@ def test_sync_pair_prints_copyable_command(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["sync", "pair", "--db-path", str(db_path)], env=env)
     assert result.exit_code == 0
     assert "opencode-mem sync pair --accept" in result.stdout
+    normalized = " ".join(result.stdout.split())
+    assert "--include/--exclude only control what it sends to peers" in normalized
+    assert "does not yet enforce incoming project filters" in normalized
+    assert "opencode-mem sync pair --accept-file pairing.json" in result.stdout
+    assert "opencode-mem sync pair --payload-only" in result.stdout
     assert '"addresses"' in result.stdout
+
+
+def test_sync_pair_help_marks_filters_outbound_only() -> None:
+    result = runner.invoke(app, ["sync", "pair", "--help"])
+    assert result.exit_code == 0
+    normalized = " ".join(result.stdout.split())
+    assert "outbound-only allowlist" in normalized
+    assert "outbound-only blocklist" in normalized
+    assert "outbound-only: this device pushes" in normalized
+    assert "all projects to that peer" in normalized
+    assert "print JSON only" in normalized
+
+
+def test_sync_pair_accept_file_rejects_empty_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    payload_path = tmp_path / "empty-pairing.json"
+    payload_path.write_text("", encoding="utf-8")
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "pair",
+            "--accept-file",
+            str(payload_path),
+            "--db-path",
+            str(db_path),
+        ],
+        env=env,
+    )
+    assert result.exit_code == 1
+    assert "Empty pairing payload" in result.stdout
+
+
+def test_sync_pair_accept_file_rejects_empty_stdin(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    result = runner.invoke(
+        app,
+        ["sync", "pair", "--accept-file", "-", "--db-path", str(db_path)],
+        env=env,
+        input="",
+    )
+    assert result.exit_code == 1
+    assert "Empty pairing payload" in result.stdout
+
+
+def test_sync_pair_payload_only_prints_json(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    monkeypatch.setattr("opencode_mem.cli_app.pick_advertise_hosts", lambda value: ["127.0.0.1"])
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    result = runner.invoke(
+        app,
+        ["sync", "pair", "--payload-only", "--db-path", str(db_path)],
+        env=env,
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout.strip())
+    assert isinstance(payload.get("device_id"), str)
+    assert isinstance(payload.get("public_key"), str)
+    assert payload.get("addresses") == ["127.0.0.1:7337"]
+
+
+def test_sync_pair_uses_keys_dir_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys_by_dir)
+    monkeypatch.setattr("opencode_mem.cli_app.pick_advertise_hosts", lambda value: ["127.0.0.1"])
+    monkeypatch.setattr(sync_identity, "DEFAULT_KEYS_DIR", tmp_path / "default-keys")
+
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {
+        "OPENCODE_MEM_CONFIG": str(config_path),
+        "OPENCODE_MEM_KEYS_DIR": str(tmp_path / "env-keys"),
+    }
+
+    result = runner.invoke(app, ["sync", "pair", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+
+    start = result.stdout.find("{")
+    assert start >= 0
+    depth = 0
+    end = -1
+    for idx in range(start, len(result.stdout)):
+        char = result.stdout[idx]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                break
+    assert end > start
+    payload = json.loads(result.stdout[start:end])
+    assert payload is not None
+    assert payload["public_key"] == "public-env-keys"
+    assert not (tmp_path / "default-keys" / "device.key.pub").exists()
+
+
+def test_sync_enable_uses_keys_dir_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys_by_dir)
+    monkeypatch.setattr(sync_identity, "DEFAULT_KEYS_DIR", tmp_path / "default-keys")
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli_app.spawn_daemon", lambda *a, **k: 12345)
+    monkeypatch.setattr(
+        "opencode_mem.cli_app.effective_status",
+        lambda host, port: type(
+            "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 12345}
+        )(),
+    )
+
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {
+        "OPENCODE_MEM_CONFIG": str(config_path),
+        "OPENCODE_MEM_KEYS_DIR": str(tmp_path / "env-keys"),
+    }
+
+    result = runner.invoke(
+        app,
+        ["sync", "enable", "--db-path", str(db_path), "--no-install"],
+        env=env,
+    )
+    assert result.exit_code == 0
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute("SELECT public_key FROM sync_device LIMIT 1").fetchone()
+        assert row is not None
+        assert row["public_key"] == "public-env-keys"
+    finally:
+        conn.close()
+    assert not (tmp_path / "default-keys" / "device.key.pub").exists()
 
 
 def test_sync_peers_list(tmp_path: Path) -> None:
