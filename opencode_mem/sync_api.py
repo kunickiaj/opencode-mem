@@ -125,17 +125,17 @@ def build_sync_handler(db_path: Path | None = None):
         def _store(self) -> MemoryStore:
             return MemoryStore(resolved_db)
 
-        def _unauthorized(self, reason: str) -> None:
-            _send_json(self, {"error": "unauthorized", "reason": reason}, status=401)
+        def _unauthorized(self) -> None:
+            _send_json(self, {"error": "unauthorized"}, status=401)
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/v1/status":
                 store = self._store()
                 try:
-                    authorized, reason = _authorize_request(store, self, b"")
+                    authorized, _reason = _authorize_request(store, self, b"")
                     if not authorized:
-                        self._unauthorized(reason)
+                        self._unauthorized()
                         return
                     device_row = store.conn.execute(
                         "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"
@@ -167,9 +167,9 @@ def build_sync_handler(db_path: Path | None = None):
             if parsed.path == "/v1/ops":
                 store = self._store()
                 try:
-                    authorized, reason = _authorize_request(store, self, b"")
+                    authorized, _reason = _authorize_request(store, self, b"")
                     if not authorized:
-                        self._unauthorized(reason)
+                        self._unauthorized()
                         return
                     peer_device_id = str(self.headers.get("X-Opencode-Device") or "")
                     params = parse_qs(parsed.query)
@@ -212,9 +212,9 @@ def build_sync_handler(db_path: Path | None = None):
                 except ValueError:
                     _send_json(self, {"error": "payload_too_large"}, status=413)
                     return
-                authorized, reason = _authorize_request(store, self, raw)
+                authorized, _reason = _authorize_request(store, self, raw)
                 if not authorized:
-                    self._unauthorized(reason)
+                    self._unauthorized()
                     return
                 source_device_id = str(self.headers.get("X-Opencode-Device") or "")
                 data = _parse_json_body(raw)
