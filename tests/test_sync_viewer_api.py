@@ -337,6 +337,9 @@ def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
         assert payload.get("redacted") is True
+        assert "only control what it sends to peers" in str(
+            payload.get("pairing_filter_hint") or ""
+        )
 
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         conn.request("GET", "/api/sync/pairing?includeDiagnostics=1")
@@ -345,5 +348,14 @@ def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
         assert resp.status == 200
         assert payload.get("device_id")
         assert payload.get("public_key")
+        addresses = payload.get("addresses")
+        assert isinstance(addresses, list)
+        assert addresses
+        assert all(":" in str(item) for item in addresses)
+        assert all("#" not in str(item) for item in addresses)
+        assert payload.get("public_key") != "[redacted]"
+        assert "does not yet enforce incoming project filters" in str(
+            payload.get("pairing_filter_hint") or ""
+        )
     finally:
         server.shutdown()

@@ -99,6 +99,10 @@ const SYNC_REDACT_KEY = 'opencode-mem-sync-redact';
 let feedTypeFilter = 'all';
 let pairingPayloadRaw: any = null;
 let pairingCommandRaw = '';
+const PAIRING_FILTER_HINT =
+  "Run this on another device with opencode-mem sync pair --accept '<payload>'. " +
+  'On that accepting device, --include/--exclude only control what it sends to peers. ' +
+  'This device does not yet enforce incoming project filters.';
 let lastSyncStatus: any = null;
 let lastSyncPeers: any[] = [];
 let lastSyncAttempts: any[] = [];
@@ -934,17 +938,17 @@ function renderPairing(payload: any) {
   const addresses = Array.isArray(payload.addresses) ? payload.addresses : [];
   const safePayload = {
     ...payload,
-    addresses: isSyncRedactionEnabled()
-      ? addresses.map((address: any) => redactAddress(address))
-      : addresses,
-    public_key: isSyncRedactionEnabled() ? '[redacted]' : payload.public_key,
+    addresses,
   };
 
   const pretty = JSON.stringify(safePayload, null, 2);
   pairingPayload.textContent = pretty;
   pairingCommandRaw = pretty;
   if (pairingHint) {
-    pairingHint.textContent = 'Copy this payload and paste it into opencode-mem on the other device.';
+    pairingHint.textContent =
+      typeof payload.pairing_filter_hint === 'string' && payload.pairing_filter_hint.trim()
+        ? payload.pairing_filter_hint
+        : PAIRING_FILTER_HINT;
   }
 }
 

@@ -57,6 +57,8 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
 
     js = _wait_for_http_text(base + "/assets/app.js")
     assert "fetch(" in js
+    assert 'public_key: isSyncRedactionEnabled() ? "[redacted]" : payload.public_key' not in js
+    assert "addresses: isSyncRedactionEnabled()" not in js
 
     favicon = _wait_for_http_text(base + "/assets/favicon.svg")
     assert "<svg" in favicon
