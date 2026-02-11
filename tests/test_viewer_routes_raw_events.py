@@ -37,6 +37,10 @@ class DummyStore:
     def raw_event_backlog_totals(self) -> dict[str, int]:
         return {}
 
+    def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        _ = limit
+        return []
+
     def record_raw_events_batch(
         self, *, opencode_session_id: str, events: list[dict[str, Any]]
     ) -> dict[str, int]:
@@ -196,3 +200,120 @@ def test_handle_post_accepts_session_lifecycle_event_types() -> None:
     assert store.meta_updates[0]["started_at"] == "2026-01-01T00:00:00Z"
     assert store.meta_updates[0]["last_seen_ts_wall_ms"] == 300
     assert flusher.noted == ["sess-lifecycle"]
+
+
+def test_handle_post_rejects_invalid_content_length() -> None:
+    payload = {
+        "opencode_session_id": "sess-1",
+        "event_type": "tool.execute.after",
+        "payload": {"tool": "read"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    handler.headers["Content-Length"] = "not-an-int"
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "invalid content-length"}
+
+
+def test_handle_post_rejects_negative_content_length() -> None:
+    handler = DummyHandler(body=b"", content_length=-1)
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "invalid content-length"}
+
+
+def test_handle_post_flusher_failure_does_not_fail_ingest() -> None:
+    payload = {
+        "opencode_session_id": "sess-1",
+        "event_type": "tool.execute.after",
+        "payload": {"tool": "read"},
+        "ts_wall_ms": 123,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    store = DummyStore()
+
+    class FailingFlusher:
+        def note_activity(self, opencode_session_id: str) -> None:
+            _ = opencode_session_id
+            raise RuntimeError("flush failed")
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=FailingFlusher(),
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {"inserted": 1, "received": 1}
+
+
+def test_handle_get_raw_events_status_returns_items_and_totals() -> None:
+    class StatusStore(DummyStore):
+        def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]:
+            return [{"opencode_session_id": "sess", "pending": limit}]
+
+        def raw_event_backlog_totals(self) -> dict[str, int]:
+            return {"sessions": 1, "pending": 7}
+
+    handler = DummyHandler(body=b"", content_length=0)
+    store = StatusStore()
+
+    handled = raw_events.handle_get(
+        handler,
+        store,
+        "/api/raw-events/status",
+        "limit=7",
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {
+        "items": [{"opencode_session_id": "sess", "pending": 7}],
+        "totals": {"sessions": 1, "pending": 7},
+    }
+
+
+def test_handle_get_raw_events_status_rejects_bad_limit() -> None:
+    handler = DummyHandler(body=b"", content_length=0)
+    store = DummyStore()
+
+    handled = raw_events.handle_get(
+        handler,
+        store,
+        "/api/raw-events/status",
+        "limit=nope",
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "limit must be int"}
