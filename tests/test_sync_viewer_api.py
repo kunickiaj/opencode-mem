@@ -529,7 +529,7 @@ def test_sync_attempts_clamps_large_limit(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_attempts_rejects_invalid_limit_query(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -558,7 +558,7 @@ def test_sync_attempts_rejects_invalid_limit_query(tmp_path: Path, monkeypatch) 
 
 def test_sync_attempts_clamps_large_limit_query(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
