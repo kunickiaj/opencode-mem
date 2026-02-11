@@ -19,6 +19,13 @@ LEGACY_IMPORT_KEY_OLD_RE = re.compile(r"^legacy:memory_item:(\d+)$")
 LEGACY_IMPORT_KEY_NEW_RE = re.compile(r"^legacy:([^:]+):memory_item:(\d+)$")
 
 
+def _normalize_memory_kind(value: Any) -> str:
+    kind = str(value or "")
+    if kind.strip().lower() == "project":
+        return "decision"
+    return kind
+
+
 def _effective_sync_project_filters(
     store: MemoryStore, *, peer_device_id: str | None = None
 ) -> tuple[list[str], list[str]]:
@@ -1046,7 +1053,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
     _ensure_session_for_replication(store, int(session_id), created_at, project=project)
     values = (
         int(session_id),
-        str(payload.get("kind") or ""),
+        _normalize_memory_kind(payload.get("kind")),
         str(payload.get("title") or ""),
         str(payload.get("body_text") or ""),
         float(payload.get("confidence") or 0.5),
@@ -1200,7 +1207,7 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
             """,
             (
                 int(session_id),
-                str(payload.get("kind") or ""),
+                _normalize_memory_kind(payload.get("kind")),
                 str(payload.get("title") or ""),
                 str(payload.get("body_text") or ""),
                 float(payload.get("confidence") or 0.5),
