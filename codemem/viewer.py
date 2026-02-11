@@ -6,7 +6,7 @@ import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from . import viewer_assets, viewer_raw_events
 from .config import load_config  # noqa: F401
@@ -113,16 +113,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if viewer_routes_stats.handle_get(self, store, parsed.path, parsed.query):
                 return
             if viewer_routes_raw_events.handle_get(self, store, parsed.path, parsed.query):
-                return
-            if parsed.path == "/api/raw-events/status":
-                params = parse_qs(parsed.query)
-                limit = int(params.get("limit", ["25"])[0])
-                self._send_json(
-                    {
-                        "items": store.raw_event_backlog(limit=limit),
-                        "totals": store.raw_event_backlog_totals(),
-                    }
-                )
                 return
             if viewer_routes_memory.handle_get(self, store, parsed.path, parsed.query):
                 return

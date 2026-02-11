@@ -49,7 +49,7 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
         store.close()
 
     sweeper = RawEventSweeper()
-    with patch("codemem.viewer.flush_raw_events") as flush:
+    with patch("codemem.viewer_raw_events.flush_raw_events") as flush:
         sweeper.tick()
         flush.assert_called_once()
 

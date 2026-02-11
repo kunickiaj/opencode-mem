@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -19,6 +20,7 @@ def _safe_int_env(name: str, default: int) -> int:
 
 
 MAX_RAW_EVENTS_BODY_BYTES = _safe_int_env("CODEMEM_RAW_EVENTS_MAX_BODY_BYTES", 1048576)
+logger = logging.getLogger(__name__)
 
 
 class _ViewerHandler(Protocol):
@@ -34,6 +36,8 @@ class _RawEventFlusher(Protocol):
 
 class _Store(Protocol):
     conn: Any
+
+    def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
 
     def raw_event_backlog_totals(self) -> dict[str, int]: ...
 
@@ -56,7 +60,21 @@ class _Store(Protocol):
 
 def handle_get(handler: Any, store: Any, path: str, query: str) -> bool:
     if path != "/api/raw-events":
-        return False
+        if path != "/api/raw-events/status":
+            return False
+        params = parse_qs(query)
+        try:
+            limit = int(params.get("limit", ["25"])[0])
+        except (TypeError, ValueError):
+            handler._send_json({"error": "limit must be int"}, status=400)
+            return True
+        handler._send_json(
+            {
+                "items": store.raw_event_backlog(limit=limit),
+                "totals": store.raw_event_backlog_totals(),
+            }
+        )
+        return True
     # Compatibility endpoint used by the web UI stats panel.
     _ = parse_qs(query)
     handler._send_json(store.raw_event_backlog_totals())
@@ -75,7 +93,14 @@ def handle_post(
     if path != "/api/raw-events":
         return False
 
-    length = int(handler.headers.get("Content-Length", "0") or 0)
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or 0)
+    except (TypeError, ValueError):
+        handler._send_json({"error": "invalid content-length"}, status=400)
+        return True
+    if length < 0:
+        handler._send_json({"error": "invalid content-length"}, status=400)
+        return True
     if length > MAX_RAW_EVENTS_BODY_BYTES:
         handler._send_json(
             {
@@ -266,7 +291,14 @@ def handle_post(
                 or (started_at if apply_request_meta else None),
                 last_seen_ts_wall_ms=last_seen_by_session.get(meta_session_id),
             )
-            flusher.note_activity(meta_session_id)
+            try:
+                flusher.note_activity(meta_session_id)
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "raw event flusher note_activity failed",
+                    extra={"opencode_session_id": meta_session_id},
+                    exc_info=exc,
+                )
 
         handler._send_json({"inserted": inserted, "received": len(items)})
         return True

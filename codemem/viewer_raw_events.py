@@ -8,7 +8,7 @@ import threading
 import time
 
 from .db import DEFAULT_DB_PATH
-from .raw_event_flush import flush_raw_events  # noqa: F401
+from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -61,9 +61,7 @@ class RawEventAutoFlusher:
         try:
             store = MemoryStore(os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH)
             try:
-                from . import viewer as _viewer
-
-                _viewer.flush_raw_events(
+                flush_raw_events(
                     store,
                     opencode_session_id=opencode_session_id,
                     cwd=None,
@@ -150,9 +148,7 @@ class RawEventSweeper:
             )
             for opencode_session_id in session_ids:
                 try:
-                    from . import viewer as _viewer
-
-                    _viewer.flush_raw_events(
+                    flush_raw_events(
                         store,
                         opencode_session_id=opencode_session_id,
                         cwd=None,
