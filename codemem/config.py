@@ -202,9 +202,7 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
 def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.runner = os.getenv("CODEMEM_RUNNER", cfg.runner)
     cfg.runner_from = os.getenv("CODEMEM_RUNNER_FROM", cfg.runner_from)
-    cfg.use_opencode_run = _parse_bool(
-        os.getenv("CODEMEM_USE_OPENCODE_RUN"), cfg.use_opencode_run
-    )
+    cfg.use_opencode_run = _parse_bool(os.getenv("CODEMEM_USE_OPENCODE_RUN"), cfg.use_opencode_run)
     cfg.opencode_model = os.getenv("CODEMEM_OPENCODE_MODEL", cfg.opencode_model)
     cfg.opencode_agent = os.getenv("CODEMEM_OPENCODE_AGENT", cfg.opencode_agent)
     cfg.observer_provider = os.getenv("CODEMEM_OBSERVER_PROVIDER", cfg.observer_provider)
@@ -234,9 +232,7 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
         key="pack_session_limit",
     )
     cfg.viewer_auto = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO"), cfg.viewer_auto)
-    cfg.viewer_auto_stop = _parse_bool(
-        os.getenv("CODEMEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop
-    )
+    cfg.viewer_auto_stop = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop)
     cfg.viewer_enabled = _parse_bool(os.getenv("CODEMEM_VIEWER"), cfg.viewer_enabled)
     cfg.viewer_host = os.getenv("CODEMEM_VIEWER_HOST", cfg.viewer_host)
     cfg.viewer_port = _parse_int(

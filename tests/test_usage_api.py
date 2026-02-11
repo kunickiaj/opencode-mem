@@ -64,9 +64,7 @@ def test_api_usage_totals_respect_project_filter(tmp_path: Path, monkeypatch) ->
         assert filtered["totals"]["tokens_read"] == 10
         assert filtered["totals_global"]["tokens_read"] == 30
         packs = filtered.get("recent_packs") or []
-        assert all(
-            (row.get("metadata_json") or {}).get("project") == "codemem" for row in packs
-        )
+        assert all((row.get("metadata_json") or {}).get("project") == "codemem" for row in packs)
     finally:
         httpd.shutdown()
 
