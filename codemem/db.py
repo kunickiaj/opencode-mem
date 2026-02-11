@@ -15,6 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
+SCHEMA_VERSION = 1
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -106,7 +107,7 @@ def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Conn
     return conn
 
 
-def initialize_schema(conn: sqlite3.Connection) -> None:
+def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS sessions (
@@ -382,24 +383,48 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_prompts_import_key ON user_prompts(import_key)"
     )
 
-    # One-off kind normalization for legacy/accidental values.
-    # This runs on startup and is idempotent.
+
+def _schema_user_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    if row is None:
+        return 0
+    return int(row[0])
+
+
+def _normalize_legacy_memory_kinds(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM memory_items WHERE lower(trim(kind)) = 'project' LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return
     conn.execute("UPDATE memory_items SET kind = 'decision' WHERE lower(trim(kind)) = 'project'")
 
-    if os.getenv("CODEMEM_EMBEDDING_DISABLED", "").lower() not in {"1", "true", "yes"}:
-        _load_sqlite_vec(conn)
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
-                embedding float[384],
-                memory_id INTEGER,
-                chunk_index INTEGER,
-                content_hash TEXT,
-                model TEXT
-            );
-            """
-        )
-    conn.commit()
+
+def _ensure_vector_schema(conn: sqlite3.Connection) -> None:
+    if os.getenv("CODEMEM_EMBEDDING_DISABLED", "").lower() in {"1", "true", "yes"}:
+        return
+    _load_sqlite_vec(conn)
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+            embedding float[384],
+            memory_id INTEGER,
+            chunk_index INTEGER,
+            content_hash TEXT,
+            model TEXT
+        );
+        """
+    )
+
+
+def initialize_schema(conn: sqlite3.Connection) -> None:
+    if _schema_user_version(conn) < SCHEMA_VERSION:
+        _initialize_schema_v1(conn)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    _ensure_vector_schema(conn)
+    _normalize_legacy_memory_kinds(conn)
+    if conn.in_transaction:
+        conn.commit()
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:

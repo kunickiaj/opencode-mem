@@ -768,6 +768,50 @@ def test_apply_replication_ops_upsert_aliases_legacy_keys(tmp_path: Path) -> Non
         store.close()
 
 
+def test_apply_replication_ops_normalizes_legacy_project_kind(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        now = "2026-01-01T00:00:00Z"
+        op = {
+            "op_id": "op-project-kind",
+            "entity_type": "memory_item",
+            "entity_id": "legacy:peer:memory_item:10",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "kind": "project",
+                "title": "Legacy kind",
+                "body_text": "replicated payload",
+                "confidence": 0.5,
+                "tags_text": "",
+                "active": 1,
+                "created_at": now,
+                "updated_at": now,
+                "metadata_json": {"clock_device_id": "peer-a"},
+                "prompt_number": 1,
+                "import_key": "legacy:peer:memory_item:10",
+                "deleted_at": None,
+                "rev": 1,
+                "project": "/tmp/project",
+            },
+            "clock": {"rev": 1, "updated_at": now, "device_id": "peer-a"},
+            "device_id": "peer-a",
+            "created_at": now,
+        }
+
+        result = store.apply_replication_ops(cast(list[ReplicationOp], [op]))
+
+        assert result["inserted"] == 1
+        row = store.conn.execute(
+            "SELECT kind FROM memory_items WHERE import_key = ?",
+            ("legacy:peer:memory_item:10",),
+        ).fetchone()
+        assert row is not None
+        assert row["kind"] == "decision"
+    finally:
+        store.close()
+
+
 def test_backfill_replication_ops_emits_delete_for_new_rev(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
