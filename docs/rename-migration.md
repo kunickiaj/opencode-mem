@@ -1,6 +1,6 @@
 # Rename Migration Plan
 
-This document tracks migration from `opencode-mem` naming to `CodeMem` package names.
+This document tracks migration from `codemem` naming to `CodeMem` package names.
 
 ## Canonical names
 
@@ -10,7 +10,7 @@ This document tracks migration from `opencode-mem` naming to `CodeMem` package n
 
 ## Compatibility policy
 
-- Keep `opencode-mem` CLI command compatibility for two releases after the first `codemem` release.
+- Keep `codemem` CLI command compatibility for two releases after the first `codemem` release.
 - Keep git-based install commands as fallback during migration; move them to advanced docs.
 - Keep old references in release notes with explicit replacement commands.
 
@@ -22,7 +22,7 @@ Old:
 
 ```json
 {
-  "plugin": ["opencode-mem"]
+  "plugin": ["codemem"]
 }
 ```
 
@@ -48,7 +48,7 @@ CodeMem rename update:
 - Repo moved to github.com/kunickiaj/codemem
 - Plugin package: @kunickiaj/codemem
 - Python package: codemem
-- Existing opencode-mem command remains supported during transition window
+- Existing codemem command remains supported during transition window
 ```
 
 ## Completion criteria

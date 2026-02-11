@@ -16,12 +16,12 @@ CodeMem uses one shared semantic version stream across npm and PyPI artifacts.
 ## Compatibility check
 
 The OpenCode plugin performs a runtime CLI version check and warns if the local CLI is below
-`OPENCODE_MEM_MIN_VERSION` (default `0.9.20`).
+`CODEMEM_MIN_VERSION` (default `0.9.20`).
 
 Override for testing:
 
 ```bash
-export OPENCODE_MEM_MIN_VERSION=0.9.20
+export CODEMEM_MIN_VERSION=0.9.20
 ```
 
 ## Transition notes
