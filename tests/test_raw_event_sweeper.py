@@ -165,3 +165,116 @@ def test_raw_event_sweeper_prioritizes_persisted_queue(monkeypatch, tmp_path: Pa
     kwargs = flush.call_args.kwargs
     assert kwargs["opencode_session_id"] == "sess-queued"
     assert kwargs["max_events"] == 7
+
+
+def test_raw_event_sweeper_skips_stale_queue_sessions_without_backlog(
+    monkeypatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER", "1")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS", "999999999")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_LIMIT", "1")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", "7")
+
+    store = MemoryStore(db_path)
+    try:
+        now_ms = int(time.time() * 1000)
+
+        store.record_raw_event(
+            opencode_session_id="sess-stale",
+            event_id="evt-stale-0",
+            event_type="user_prompt",
+            payload={"type": "user_prompt", "prompt_text": "stale"},
+            ts_wall_ms=now_ms,
+            ts_mono_ms=1.0,
+        )
+        store.update_raw_event_session_meta(
+            opencode_session_id="sess-stale",
+            cwd=str(tmp_path),
+            project="test-project",
+            started_at="2026-01-01T00:00:00Z",
+            last_seen_ts_wall_ms=now_ms,
+        )
+        store.update_raw_event_flush_state("sess-stale", 0)
+
+        store.record_raw_event(
+            opencode_session_id="sess-real",
+            event_id="evt-real-0",
+            event_type="user_prompt",
+            payload={"type": "user_prompt", "prompt_text": "real"},
+            ts_wall_ms=now_ms + 1,
+            ts_mono_ms=2.0,
+        )
+        store.record_raw_event(
+            opencode_session_id="sess-real",
+            event_id="evt-real-1",
+            event_type="tool.execute.after",
+            payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "x"}},
+            ts_wall_ms=now_ms + 2,
+            ts_mono_ms=3.0,
+        )
+        store.update_raw_event_session_meta(
+            opencode_session_id="sess-real",
+            cwd=str(tmp_path),
+            project="test-project",
+            started_at="2026-01-01T00:00:00Z",
+            last_seen_ts_wall_ms=now_ms,
+        )
+
+        store.conn.execute(
+            """
+            INSERT INTO raw_event_flush_batches(
+                opencode_session_id,
+                start_event_seq,
+                end_event_seq,
+                extractor_version,
+                status,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sess-stale",
+                0,
+                0,
+                "raw_events_v1",
+                "pending",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        store.conn.execute(
+            """
+            INSERT INTO raw_event_flush_batches(
+                opencode_session_id,
+                start_event_seq,
+                end_event_seq,
+                extractor_version,
+                status,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sess-real",
+                0,
+                1,
+                "raw_events_v1",
+                "pending",
+                "2026-01-01T00:00:01+00:00",
+                "2026-01-01T00:00:01+00:00",
+            ),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    sweeper = RawEventSweeper()
+    with patch("codemem.viewer_raw_events.flush_raw_events") as flush:
+        sweeper.tick()
+
+    flush.assert_called_once()
+    kwargs = flush.call_args.kwargs
+    assert kwargs["opencode_session_id"] == "sess-real"
+    assert kwargs["max_events"] == 7

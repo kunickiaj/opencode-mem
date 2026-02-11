@@ -683,10 +683,25 @@ def raw_event_sessions_with_pending_queue(
 ) -> list[str]:
     rows = conn.execute(
         """
-        SELECT DISTINCT b.opencode_session_id
-        FROM raw_event_flush_batches b
-        WHERE b.status IN ('pending', 'failed', 'started', 'error')
-        ORDER BY b.updated_at ASC
+        WITH pending_batches AS (
+            SELECT
+              b.opencode_session_id,
+              MIN(b.updated_at) AS oldest_pending_update
+            FROM raw_event_flush_batches b
+            WHERE b.status IN ('pending', 'failed', 'started', 'error')
+            GROUP BY b.opencode_session_id
+        ),
+        max_events AS (
+            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            FROM raw_events
+            GROUP BY opencode_session_id
+        )
+        SELECT b.opencode_session_id
+        FROM pending_batches b
+        JOIN max_events e ON e.opencode_session_id = b.opencode_session_id
+        LEFT JOIN raw_event_sessions s ON s.opencode_session_id = b.opencode_session_id
+        WHERE e.max_seq > COALESCE(s.last_flushed_event_seq, -1)
+        ORDER BY b.oldest_pending_update ASC
         LIMIT ?
         """,
         (limit,),
