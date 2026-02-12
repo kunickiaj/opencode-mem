@@ -47,3 +47,49 @@ def test_load_config_invalid_config_value_does_not_crash_and_warns(tmp_path: Pat
     with pytest.warns(RuntimeWarning, match="sync_port"):
         cfg = load_config(config_path)
     assert cfg.sync_port == 7337
+
+
+def test_load_config_reads_hybrid_retrieval_enabled_from_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"hybrid_retrieval_enabled": true}\n')
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_enabled is True
+
+
+def test_load_config_reads_hybrid_retrieval_enabled_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "1")
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_enabled is True
+
+
+def test_load_config_hybrid_retrieval_env_overrides_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"hybrid_retrieval_enabled": true}\n')
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "0")
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_enabled is False
+
+
+def test_load_config_hybrid_retrieval_invalid_env_uses_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "maybe")
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_enabled is False

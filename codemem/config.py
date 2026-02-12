@@ -15,6 +15,7 @@ CONFIG_ENV_OVERRIDES = {
     "observer_max_chars": "CODEMEM_OBSERVER_MAX_CHARS",
     "pack_observation_limit": "CODEMEM_PACK_OBSERVATION_LIMIT",
     "pack_session_limit": "CODEMEM_PACK_SESSION_LIMIT",
+    "hybrid_retrieval_enabled": "CODEMEM_HYBRID_RETRIEVAL_ENABLED",
     "sync_enabled": "CODEMEM_SYNC_ENABLED",
     "sync_host": "CODEMEM_SYNC_HOST",
     "sync_port": "CODEMEM_SYNC_PORT",
@@ -79,6 +80,7 @@ class OpencodeMemConfig:
     summary_max_chars: int = 6000
     pack_observation_limit: int = 50
     pack_session_limit: int = 10
+    hybrid_retrieval_enabled: bool = False
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
@@ -182,6 +184,7 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             continue
         if key in {
             "use_opencode_run",
+            "hybrid_retrieval_enabled",
             "viewer_auto",
             "viewer_auto_stop",
             "viewer_enabled",
@@ -230,6 +233,9 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
         os.getenv("CODEMEM_PACK_SESSION_LIMIT"),
         cfg.pack_session_limit,
         key="pack_session_limit",
+    )
+    cfg.hybrid_retrieval_enabled = _parse_bool(
+        os.getenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED"), cfg.hybrid_retrieval_enabled
     )
     cfg.viewer_auto = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO"), cfg.viewer_auto)
     cfg.viewer_auto_stop = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop)
