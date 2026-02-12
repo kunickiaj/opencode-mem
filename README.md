@@ -8,7 +8,7 @@ A lightweight persistent-memory companion for OpenCode. Captures terminal sessio
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- SSH access to this GitHub repository (for installation)
+- SSH access to this GitHub repository (only for git-based fallback installs)
 
 ## Quick setup
 
@@ -59,6 +59,12 @@ Optionally point the SQLite store somewhere else:
 ```bash
 export CODEMEM_DB=~/.codemem/mem.sqlite
 ```
+
+Legacy DB auto-migration on first codemem run:
+- Default target: `~/.codemem/mem.sqlite`
+- Legacy sources checked: `~/.opencode-mem.sqlite`, `~/.codemem.sqlite`
+- DB file plus `-wal` and `-shm` sidecars are moved together
+- Migration only runs when using the default target path and no new DB exists yet
 
 ## CLI commands
 
@@ -357,6 +363,64 @@ Notes:
 - The key is `plugin` (singular). `plugins` is rejected as an unknown key.
 - To pin a specific plugin release, use `"@kunickiaj/codemem@0.9.20"`.
 
+#### Migrating from legacy `opencode-mem` (step by step)
+
+1. Back up your existing DB:
+
+```bash
+cp ~/.opencode-mem.sqlite ~/.opencode-mem.sqlite.bak
+```
+
+2. Update OpenCode config to use the npm plugin package:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@kunickiaj/codemem"]
+}
+```
+
+3. Update OpenCode MCP command to `codemem` (if present):
+
+```json
+{
+  "mcp": {
+    "codemem": {
+      "type": "local",
+      "command": ["codemem", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+4. Migrate runtime config file (if you used legacy config):
+
+```bash
+mkdir -p ~/.config/codemem
+cp ~/.config/opencode-mem/config.json ~/.config/codemem/config.json
+```
+
+5. Restart OpenCode.
+6. Verify codemem starts and data is present:
+
+```bash
+codemem stats
+codemem raw-events-status
+```
+
+7. After one successful run, remove legacy tool install:
+
+```bash
+uv tool uninstall opencode-mem
+```
+
+Notes:
+- Do not uninstall `opencode-mem` before your first successful codemem run.
+- On first run, codemem auto-migrates `~/.opencode-mem.sqlite` to `~/.codemem/mem.sqlite` when default DB path is used.
+- If `~/.codemem/mem.sqlite` already exists, auto-migration is skipped (move/copy legacy DB manually if needed).
+- If this machine should use installed-package behavior, remove `runner_from` from `~/.config/codemem/config.json`.
+
 **Git fallback one-liner** (advanced):
 
 ```bash
@@ -369,18 +433,30 @@ That's it! Restart OpenCode and the plugin is active.
 
 Just start OpenCode inside the repo directory — the plugin auto-loads from `.opencode/plugin/`.
 
+Dev mode on a machine that already has the npm plugin installed:
+- Inside this repo: OpenCode uses local `.opencode/plugin/codemem.js` (dev mode, picks up your edits).
+- Outside this repo: OpenCode uses configured package plugin (`@kunickiaj/codemem`).
+- To test migration behavior on your dev machine, run one validation session outside the repo so you exercise installed-package behavior.
+
 ### How it works
 
 When OpenCode starts, the plugin loads and:
 
 1. **Auto-detects mode**:
    - If in the `codemem` repo → uses `uv run` (dev mode, picks up changes)
-   - Otherwise → uses `uvx --from git+ssh://...` (installed mode)
+   - Otherwise → uses `uvx --from git+https://github.com/kunickiaj/codemem.git ...` (installed mode)
 
 2. Tracks every tool invocation (`tool.execute.after`)
 3. Flushes captured events on session boundaries (`session.idle`, `session.created`, `/new`, `session.error`)
-4. Auto-starts the viewer by default (set `CODEMEM_VIEWER_AUTO=0` to disable)
+4. Auto-starts the viewer on plugin initialization (idempotent; set `CODEMEM_VIEWER_AUTO=0` to disable)
 5. Injects a memory pack into the system prompt (disable with `CODEMEM_INJECT_CONTEXT=0`)
+
+### Screenshot checklist (v0.10 docs)
+
+Capture and add these images before/after release:
+- `docs/images/viewer-overview.png` (main dashboard)
+- `docs/images/session-detail.png` (session + memory detail view)
+- `docs/images/settings-provider.png` (observer/provider settings)
 
 ### Environment hints for the plugin
 
