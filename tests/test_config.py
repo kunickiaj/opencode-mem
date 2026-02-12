@@ -93,3 +93,31 @@ def test_load_config_hybrid_retrieval_invalid_env_uses_default(
     cfg = load_config(config_path)
 
     assert cfg.hybrid_retrieval_enabled is False
+
+
+def test_load_config_reads_hybrid_shadow_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"hybrid_retrieval_shadow_log": true, "hybrid_retrieval_shadow_sample_rate": 0.5}\n'
+    )
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "0.25")
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_shadow_log is True
+    assert cfg.hybrid_retrieval_shadow_sample_rate == 0.25
+
+
+def test_load_config_clamps_hybrid_shadow_sample_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "5")
+
+    cfg = load_config(config_path)
+
+    assert cfg.hybrid_retrieval_shadow_sample_rate == 1.0

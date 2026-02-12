@@ -98,6 +98,9 @@ class MemoryStore:
             self.device_id = str(row["device_id"]) if row else "local"
 
         cfg = load_config()
+        self._hybrid_retrieval_enabled = bool(cfg.hybrid_retrieval_enabled)
+        self._hybrid_retrieval_shadow_log = bool(cfg.hybrid_retrieval_shadow_log)
+        self._hybrid_retrieval_shadow_sample_rate = float(cfg.hybrid_retrieval_shadow_sample_rate)
         self._sync_projects_include = [
             p.strip() for p in cfg.sync_projects_include if p and p.strip()
         ]

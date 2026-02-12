@@ -11,6 +11,7 @@ from codemem import db
 from codemem import store as store_module
 from codemem import viewer as viewer_module
 from codemem.store import MemoryStore, ReplicationOp
+from codemem.store.types import MemoryResult
 from codemem.viewer import ViewerHandler
 
 
@@ -2184,6 +2185,206 @@ def test_search_finds_by_tag_only(tmp_path: Path) -> None:
 
     results = store.search("postgres", limit=5)
     assert any(result.id == memory_id for result in results)
+
+
+def test_merge_ranked_results_shadow_logs_without_changing_baseline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "1")
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    monkeypatch.setattr(
+        "codemem.store.search._semantic_search",
+        lambda *_args, **_kwargs: [
+            {
+                "id": 2,
+                "kind": "note",
+                "title": "beta",
+                "body_text": "beta",
+                "confidence": 0.5,
+                "tags_text": "",
+                "metadata_json": "{}",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "session_id": 1,
+                "score": 0.95,
+            }
+        ],
+    )
+
+    baseline_top = MemoryResult(
+        id=1,
+        kind="note",
+        title="alpha",
+        body_text="alpha",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=1.0,
+        session_id=1,
+        metadata={},
+    )
+    hybrid_top_candidate = MemoryResult(
+        id=2,
+        kind="note",
+        title="beta",
+        body_text="beta",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=0.8,
+        session_id=1,
+        metadata={},
+    )
+
+    ranked = store._merge_ranked_results(
+        [baseline_top, hybrid_top_candidate],
+        query="upgrade guidance",
+        limit=2,
+        filters={"project": "proj-a"},
+    )
+
+    assert [item.id for item in ranked] == [1, 2]
+    row = store.conn.execute(
+        "SELECT metadata_json FROM usage_events WHERE event = 'search_hybrid_shadow' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    metadata = db.from_json(row["metadata_json"])
+    assert metadata["active_mode"] == "baseline"
+    assert metadata["overlap_at_k"] == 2
+    assert metadata["compared_count"] == 2
+    assert metadata["overlap_ratio"] == 1.0
+    assert metadata["top1_changed"] is True
+    assert metadata["position_shift_sum"] == 2
+
+
+def test_merge_ranked_results_can_activate_hybrid(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "1")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    monkeypatch.setattr(
+        "codemem.store.search._semantic_search",
+        lambda *_args, **_kwargs: [
+            {
+                "id": 2,
+                "kind": "note",
+                "title": "beta",
+                "body_text": "beta",
+                "confidence": 0.5,
+                "tags_text": "",
+                "metadata_json": "{}",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "session_id": 1,
+                "score": 0.95,
+            }
+        ],
+    )
+
+    baseline_top = MemoryResult(
+        id=1,
+        kind="note",
+        title="alpha",
+        body_text="alpha",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=1.0,
+        session_id=1,
+        metadata={},
+    )
+    hybrid_top_candidate = MemoryResult(
+        id=2,
+        kind="note",
+        title="beta",
+        body_text="beta",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=0.8,
+        session_id=1,
+        metadata={},
+    )
+
+    ranked = store._merge_ranked_results(
+        [baseline_top, hybrid_top_candidate],
+        query="upgrade guidance",
+        limit=2,
+        filters=None,
+    )
+
+    assert [item.id for item in ranked] == [2, 1]
+    row = store.conn.execute(
+        "SELECT metadata_json FROM usage_events WHERE event = 'search_hybrid_shadow' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    metadata = db.from_json(row["metadata_json"])
+    assert metadata["active_mode"] == "hybrid"
+
+
+def test_merge_ranked_results_shadow_sample_rate_zero_skips_logging(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "0")
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    monkeypatch.setattr("codemem.store.search.random.random", lambda: 0.0)
+    monkeypatch.setattr("codemem.store.search._semantic_search", lambda *_args, **_kwargs: [])
+
+    only_item = MemoryResult(
+        id=1,
+        kind="note",
+        title="alpha",
+        body_text="alpha",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=1.0,
+        session_id=1,
+        metadata={},
+    )
+
+    store._merge_ranked_results([only_item], query="alpha", limit=1, filters=None)
+
+    row = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM usage_events WHERE event = 'search_hybrid_shadow'"
+    ).fetchone()
+    assert row is not None
+    assert int(row["n"]) == 0
+
+
+def test_merge_ranked_results_skips_hybrid_compute_when_flags_off(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    monkeypatch.setattr("codemem.store.search._semantic_search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "codemem.store.search._rerank_results_hybrid",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("hybrid should not run")),
+    )
+
+    only_item = MemoryResult(
+        id=1,
+        kind="note",
+        title="alpha",
+        body_text="alpha",
+        confidence=0.5,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        tags_text="",
+        score=1.0,
+        session_id=1,
+        metadata={},
+    )
+
+    ranked = store._merge_ranked_results([only_item], query="alpha", limit=1, filters=None)
+
+    assert [item.id for item in ranked] == [1]
 
 
 def test_backfill_tags_text_is_idempotent(tmp_path: Path) -> None:

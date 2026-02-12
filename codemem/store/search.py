@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import random
 import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -402,6 +403,83 @@ def _rerank_results(
     return ordered[:limit]
 
 
+def _rerank_results_hybrid(
+    results: list[MemoryResult],
+    *,
+    limit: int,
+    semantic_ids: set[int],
+    recency_days: int | None = None,
+) -> list[MemoryResult]:
+    if recency_days:
+        recent_results = _filter_recent_results(results, recency_days)
+        if recent_results:
+            results = cast(list[MemoryResult], list(recent_results))
+
+    def score(item: MemoryResult) -> float:
+        semantic_boost = 0.35 if item.id in semantic_ids else 0.0
+        return (
+            (item.score * 1.2)
+            + (_recency_score(item.created_at) * 0.8)
+            + _kind_bonus(item.kind)
+            + semantic_boost
+        )
+
+    ordered = sorted(results, key=score, reverse=True)
+    return ordered[:limit]
+
+
+def _should_log_shadow(*, sample_rate: float) -> bool:
+    if sample_rate <= 0.0:
+        return False
+    if sample_rate >= 1.0:
+        return True
+    return random.random() < sample_rate
+
+
+def _log_shadow_comparison(
+    store: MemoryStore,
+    *,
+    query: str,
+    filters: dict[str, Any] | None,
+    limit: int,
+    active_mode: str,
+    baseline: list[MemoryResult],
+    hybrid: list[MemoryResult],
+) -> None:
+    top_k = min(limit, 20)
+    baseline_ids = [item.id for item in baseline[:top_k]]
+    hybrid_ids = [item.id for item in hybrid[:top_k]]
+    overlap = len(set(baseline_ids) & set(hybrid_ids))
+    compared_count = min(len(baseline_ids), len(hybrid_ids))
+    overlap_ratio = float(overlap) / float(compared_count or 1)
+    hybrid_positions = {memory_id: idx for idx, memory_id in enumerate(hybrid_ids)}
+    position_shift_sum = 0
+    comparable = 0
+    for idx, memory_id in enumerate(baseline_ids):
+        if memory_id not in hybrid_positions:
+            continue
+        position_shift_sum += abs(idx - hybrid_positions[memory_id])
+        comparable += 1
+    store.record_usage(
+        "search_hybrid_shadow",
+        metadata={
+            "query_chars": len(query),
+            "limit": int(limit),
+            "project": (filters or {}).get("project"),
+            "kind": (filters or {}).get("kind"),
+            "active_mode": active_mode,
+            "sample_rate": store._hybrid_retrieval_shadow_sample_rate,
+            "overlap_at_k": overlap,
+            "overlap_ratio": overlap_ratio,
+            "compared_count": compared_count,
+            "top1_changed": bool(baseline_ids and hybrid_ids and baseline_ids[0] != hybrid_ids[0]),
+            "position_shift_sum": position_shift_sum,
+            "comparable_ids": comparable,
+            "k": top_k,
+        },
+    )
+
+
 def _merge_ranked_results(
     store: MemoryStore,
     results: Sequence[MemoryResult | dict[str, Any]],
@@ -415,6 +493,17 @@ def _merge_ranked_results(
         if item is not None
     }
     vector_results = _semantic_search(store, query, limit=limit, filters=filters)
+    semantic_ids: set[int] = set()
+    for item in vector_results:
+        memory_id = item.get("id")
+        if memory_id is None or isinstance(memory_id, bool):
+            continue
+        if not isinstance(memory_id, (int, float, str)):
+            continue
+        try:
+            semantic_ids.add(int(memory_id))
+        except (TypeError, ValueError):
+            continue
     merged: list[MemoryResult | dict[str, Any]] = list(results)
     for item in vector_results:
         if item.get("id") in fts_ids:
@@ -456,7 +545,31 @@ def _merge_ranked_results(
                 metadata=metadata,
             )
         )
-    return _rerank_results(reranked, limit=limit, recency_days=store.RECALL_RECENCY_DAYS)
+    baseline = _rerank_results(reranked, limit=limit, recency_days=store.RECALL_RECENCY_DAYS)
+    should_shadow = store._hybrid_retrieval_shadow_log and _should_log_shadow(
+        sample_rate=store._hybrid_retrieval_shadow_sample_rate
+    )
+    if not store._hybrid_retrieval_enabled and not should_shadow:
+        return baseline
+    hybrid = _rerank_results_hybrid(
+        reranked,
+        limit=limit,
+        semantic_ids=semantic_ids,
+        recency_days=store.RECALL_RECENCY_DAYS,
+    )
+    if should_shadow:
+        _log_shadow_comparison(
+            store,
+            query=query,
+            filters=filters,
+            limit=limit,
+            active_mode="hybrid" if store._hybrid_retrieval_enabled else "baseline",
+            baseline=baseline,
+            hybrid=hybrid,
+        )
+    if store._hybrid_retrieval_enabled:
+        return hybrid
+    return baseline
 
 
 def _timeline_around(
