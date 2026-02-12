@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 @dataclass(frozen=True)
@@ -99,8 +99,114 @@ def _pid_command(pid: int) -> str | None:
 
 
 def _is_sync_daemon_command(command: str) -> bool:
-    normalized = command.lower()
-    return "sync" in normalized and "daemon" in normalized
+    tokens = _tokenize_ps_command(command)
+    if not tokens:
+        return False
+
+    lowered = [token.lower() for token in tokens]
+    configured_binary = _normalized_binary_name(os.environ.get("CODEMEM_SYNC_BIN", ""))
+    configured_binary = configured_binary.removesuffix(".exe")
+    allowed_binaries = {"codemem", "opencode-mem"}
+    if configured_binary:
+        allowed_binaries.add(configured_binary)
+
+    allowed_modules = {"codemem", "codemem.cli", "opencode_mem", "opencode_mem.cli"}
+    if _matches_sync_daemon_invocation(
+        tokens=tokens,
+        lowered=lowered,
+        start=0,
+        allowed_binaries=allowed_binaries,
+        allowed_modules=allowed_modules,
+    ):
+        return True
+
+    wrapped_start = _wrapped_command_start(tokens, lowered)
+    return wrapped_start is not None and _matches_sync_daemon_invocation(
+        tokens=tokens,
+        lowered=lowered,
+        start=wrapped_start,
+        allowed_binaries=allowed_binaries,
+        allowed_modules=allowed_modules,
+    )
+
+
+def _tokenize_ps_command(command: str) -> list[str]:
+    return command.split()
+
+
+def _normalized_binary_name(token: str) -> str:
+    posix_name = Path(token).name
+    windows_name = PureWindowsPath(token).name
+    name = windows_name if len(windows_name) < len(posix_name) else posix_name
+    return name.lower()
+
+
+def _wrapped_command_start(tokens: list[str], lowered: list[str]) -> int | None:
+    launcher = _normalized_binary_name(tokens[0]).removesuffix(".exe")
+    if launcher not in {"uv", "uvx"}:
+        return None
+
+    index = 1
+    if launcher == "uv" and index < len(lowered) and lowered[index] == "run":
+        index += 1
+
+    opts_with_value = {
+        "--directory",
+        "--project",
+        "--python",
+        "--from",
+        "--with",
+        "--index",
+        "--extra-index-url",
+        "-p",
+    }
+    while index < len(lowered):
+        token = lowered[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-"):
+            if "=" in token:
+                index += 1
+                continue
+            if token in opts_with_value and index + 1 < len(lowered):
+                index += 2
+                continue
+            index += 1
+            continue
+        break
+    return index if index < len(tokens) else None
+
+
+def _matches_sync_daemon_invocation(
+    *,
+    tokens: list[str],
+    lowered: list[str],
+    start: int,
+    allowed_binaries: set[str],
+    allowed_modules: set[str],
+) -> bool:
+    if start + 2 < len(tokens):
+        binary_name = _normalized_binary_name(tokens[start]).removesuffix(".exe")
+        if (
+            binary_name in allowed_binaries
+            and lowered[start + 1] == "sync"
+            and lowered[start + 2] == "daemon"
+        ):
+            return True
+
+    if start + 4 < len(tokens):
+        binary_name = _normalized_binary_name(tokens[start]).removesuffix(".exe")
+        if (
+            (binary_name == "py" or binary_name.startswith("python"))
+            and lowered[start + 1] == "-m"
+            and lowered[start + 2] in allowed_modules
+            and lowered[start + 3] == "sync"
+            and lowered[start + 4] == "daemon"
+        ):
+            return True
+
+    return False
 
 
 def _pid_is_sync_daemon(pid: int) -> bool:
@@ -207,7 +313,6 @@ def stop_pidfile() -> bool:
         _clear_pid(pid_path)
         return False
     if not _pid_is_sync_daemon(pid):
-        _clear_pid(pid_path)
         return False
     try:
         os.kill(pid, signal.SIGTERM)
