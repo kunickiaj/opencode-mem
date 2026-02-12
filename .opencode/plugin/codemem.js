@@ -777,6 +777,7 @@ export const OpencodeMemPlugin = async ({
 
   await log("info", "codemem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
+  startViewer();
   await verifyCliCompatibility();
 
   const truncate = (value) => {
