@@ -16,6 +16,8 @@ CONFIG_ENV_OVERRIDES = {
     "pack_observation_limit": "CODEMEM_PACK_OBSERVATION_LIMIT",
     "pack_session_limit": "CODEMEM_PACK_SESSION_LIMIT",
     "hybrid_retrieval_enabled": "CODEMEM_HYBRID_RETRIEVAL_ENABLED",
+    "hybrid_retrieval_shadow_log": "CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG",
+    "hybrid_retrieval_shadow_sample_rate": "CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE",
     "sync_enabled": "CODEMEM_SYNC_ENABLED",
     "sync_host": "CODEMEM_SYNC_HOST",
     "sync_port": "CODEMEM_SYNC_PORT",
@@ -81,6 +83,8 @@ class OpencodeMemConfig:
     pack_observation_limit: int = 50
     pack_session_limit: int = 10
     hybrid_retrieval_enabled: bool = False
+    hybrid_retrieval_shadow_log: bool = False
+    hybrid_retrieval_shadow_sample_rate: float = 1.0
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
@@ -137,6 +141,16 @@ def _coerce_bool(value: object, default: bool, *, key: str) -> bool:
     return default
 
 
+def _parse_float(value: object, default: float, *, key: str) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        warnings.warn(f"Invalid float for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+        return default
+
+
 def _coerce_str_list(value: object, *, key: str) -> list[str] | None:
     if value is None:
         return None
@@ -182,9 +196,14 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
         }:
             setattr(cfg, key, _parse_int(value, getattr(cfg, key), key=key))
             continue
+        if key in {"hybrid_retrieval_shadow_sample_rate"}:
+            sample_rate = _parse_float(value, getattr(cfg, key), key=key)
+            setattr(cfg, key, min(1.0, max(0.0, sample_rate)))
+            continue
         if key in {
             "use_opencode_run",
             "hybrid_retrieval_enabled",
+            "hybrid_retrieval_shadow_log",
             "viewer_auto",
             "viewer_auto_stop",
             "viewer_enabled",
@@ -236,6 +255,20 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.hybrid_retrieval_enabled = _parse_bool(
         os.getenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED"), cfg.hybrid_retrieval_enabled
+    )
+    cfg.hybrid_retrieval_shadow_log = _parse_bool(
+        os.getenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG"), cfg.hybrid_retrieval_shadow_log
+    )
+    cfg.hybrid_retrieval_shadow_sample_rate = min(
+        1.0,
+        max(
+            0.0,
+            _parse_float(
+                os.getenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE"),
+                cfg.hybrid_retrieval_shadow_sample_rate,
+                key="hybrid_retrieval_shadow_sample_rate",
+            ),
+        ),
     )
     cfg.viewer_auto = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO"), cfg.viewer_auto)
     cfg.viewer_auto_stop = _parse_bool(os.getenv("CODEMEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop)
