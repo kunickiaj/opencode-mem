@@ -597,6 +597,40 @@ export const OpencodeMemPlugin = async ({
     return true;
   };
 
+  const resolveUpgradeGuidance = () => {
+    const normalizedRunner = String(runner || "").trim();
+    const normalizedFrom = String(runnerFrom || "").trim();
+
+    if (normalizedRunner === "uv") {
+      return {
+        mode: "uv-dev",
+        action: "In your codemem repo, pull latest changes and run `uv sync`, then restart OpenCode.",
+        note: "detected dev repo mode",
+      };
+    }
+
+    if (normalizedRunner === "uvx") {
+      if (normalizedFrom.startsWith("git+") || normalizedFrom.includes(".git")) {
+        return {
+          mode: "uvx-git",
+          action: `Update CODEMEM_RUNNER_FROM to a newer git ref/source (current: ${normalizedFrom || "<unset>"}), then restart OpenCode.`,
+          note: "detected uvx git mode",
+        };
+      }
+      return {
+        mode: "uvx-custom",
+        action: `Update CODEMEM_RUNNER_FROM to a newer source (current: ${normalizedFrom || "<unset>"}), then restart OpenCode.`,
+        note: "detected uvx custom source mode",
+      };
+    }
+
+    return {
+      mode: "generic",
+      action: "Run `uv tool install --upgrade codemem`, then restart OpenCode.",
+      note: "fallback guidance",
+    };
+  };
+
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
     const versionResult = await runCli(["--version"]);
@@ -608,19 +642,59 @@ export const OpencodeMemPlugin = async ({
       );
       return;
     }
+
     const currentVersion = (versionResult.stdout || "").trim();
+    const parsedCurrent = parseSemver(currentVersion);
+    const parsedMinimum = parseSemver(minVersion);
+    if (!parsedCurrent || !parsedMinimum) {
+      const guidance = resolveUpgradeGuidance();
+      await logLine(
+        `compat.version_unparsed current=${redactLog(currentVersion || "")} required=${redactLog(minVersion)}`
+      );
+      await log("warn", "codemem compatibility check could not parse versions", {
+        currentVersion,
+        minVersion,
+        runner,
+        runnerFrom,
+        upgradeMode: guidance.mode,
+      });
+      if (client.tui?.showToast) {
+        try {
+          await client.tui.showToast({
+            body: {
+              message: `codemem compatibility check could not parse versions (cli='${currentVersion || "unknown"}', required='${minVersion}'). Suggested action: ${guidance.action}`,
+              variant: "warning",
+            },
+          });
+        } catch (toastErr) {
+          // best-effort only
+        }
+      }
+      return;
+    }
+
     if (isVersionAtLeast(currentVersion, minVersion)) {
       return;
     }
 
+    const guidance = resolveUpgradeGuidance();
     const message = `codemem CLI ${currentVersion || "unknown"} is older than required ${minVersion}`;
-    await log("warn", message, { currentVersion, minVersion });
-    await logLine(`compat.version_mismatch current=${currentVersion} required=${minVersion}`);
+    await log("warn", message, {
+      currentVersion,
+      minVersion,
+      runner,
+      runnerFrom,
+      upgradeMode: guidance.mode,
+      upgradeAction: guidance.action,
+    });
+    await logLine(
+      `compat.version_mismatch current=${currentVersion} required=${minVersion} mode=${guidance.mode} note=${redactLog(guidance.note)}`
+    );
     if (client.tui?.showToast) {
       try {
         await client.tui.showToast({
           body: {
-            message: `${message}. Upgrade: uv tool install --upgrade codemem`,
+            message: `${message}. Suggested action: ${guidance.action}`,
             variant: "warning",
           },
         });
