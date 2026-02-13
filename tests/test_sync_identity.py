@@ -11,6 +11,15 @@ def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
     os.chmod(private_key_path, 0o600)
 
 
+def _write_recovered_keys(private_key_path: Path, public_key_path: Path) -> None:
+    private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    private_key_path.write_text("recovered-private")
+    public_key_path.write_text(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotARealKeyButValidFormat recovered@local\n"
+    )
+    os.chmod(private_key_path, 0o600)
+
+
 def test_device_identity_persists(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     conn = db.connect(tmp_path / "mem.sqlite")
@@ -78,3 +87,26 @@ def test_keychain_load_prefers_secret_tool(monkeypatch, tmp_path: Path) -> None:
 
     private_key = sync_identity.load_private_key()
     assert private_key == b"secret-key"
+
+
+def test_ensure_device_identity_recovers_invalid_existing_keys(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_recovered_keys)
+    monkeypatch.setattr(sync_identity, "_ssh_keygen_available", lambda: False)
+    conn = db.connect(tmp_path / "mem.sqlite")
+    try:
+        db.initialize_schema(conn)
+        keys_dir = tmp_path / "keys"
+        keys_dir.mkdir(parents=True, exist_ok=True)
+        private_key_path = keys_dir / "device.key"
+        public_key_path = keys_dir / "device.key.pub"
+        private_key_path.write_text("private-key")
+        public_key_path.write_text("public-key")
+
+        sync_identity.ensure_device_identity(conn, keys_dir=keys_dir)
+
+        assert private_key_path.read_text() == "recovered-private"
+        assert public_key_path.read_text().startswith("ssh-ed25519 ")
+        assert list(keys_dir.glob("device.key.invalid-*"))
+        assert list(keys_dir.glob("device.key.pub.invalid-*"))
+    finally:
+        conn.close()
