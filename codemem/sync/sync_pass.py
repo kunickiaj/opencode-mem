@@ -134,7 +134,13 @@ def sync_once(
     last_applied, last_acked = replication.get_replication_cursor(store, peer_device_id)
     keys_dir_value = os.environ.get("CODEMEM_KEYS_DIR")
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
-    device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
+    try:
+        device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
+    except Exception as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        error = f"device identity unavailable: {detail}"
+        discovery.record_sync_attempt(store.conn, peer_device_id, ok=False, error=error)
+        return {"ok": False, "error": error, "address_errors": []}
     error: str | None = None
     address_errors: list[dict[str, str]] = []
     attempted_any = False

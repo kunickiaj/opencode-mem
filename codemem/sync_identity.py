@@ -165,6 +165,42 @@ def _generate_keypair(private_key_path: Path, public_key_path: Path) -> None:
         raise RuntimeError("public key generation failed")
 
 
+def _public_key_looks_valid(public_key: str) -> bool:
+    value = public_key.strip()
+    return value.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-"))
+
+
+def _backup_invalid_key_file(path: Path, *, stamp: str) -> None:
+    if not path.exists():
+        return
+    backup_path = path.with_name(f"{path.name}.invalid-{stamp}")
+    path.replace(backup_path)
+
+
+def _validate_existing_keypair(private_key_path: Path, public_key_path: Path) -> bool:
+    if not (private_key_path.exists() and public_key_path.exists()):
+        return False
+    public_key = public_key_path.read_text().strip()
+    if not public_key or not _public_key_looks_valid(public_key):
+        return False
+    if not _ssh_keygen_available():
+        return True
+    result = subprocess.run(
+        ["ssh-keygen", "-y", "-f", str(private_key_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    derived_public_key = (result.stdout or "").strip()
+    if not derived_public_key or not _public_key_looks_valid(derived_public_key):
+        return False
+    if derived_public_key != public_key:
+        public_key_path.write_text(f"{derived_public_key}\n")
+    return True
+
+
 def ensure_device_identity(
     conn: sqlite3.Connection,
     *,
@@ -184,6 +220,11 @@ def ensure_device_identity(
     existing_fingerprint = str(row["fingerprint"]) if row else ""
 
     keys_ready = private_key_path.exists() and public_key_path.exists()
+    if keys_ready and not _validate_existing_keypair(private_key_path, public_key_path):
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d%H%M%S%f")
+        _backup_invalid_key_file(private_key_path, stamp=stamp)
+        _backup_invalid_key_file(public_key_path, stamp=stamp)
+        keys_ready = False
     if not keys_ready:
         _generate_keypair(private_key_path, public_key_path)
 

@@ -708,6 +708,35 @@ def test_sync_once_advances_last_acked_when_outbound_filtered(monkeypatch, tmp_p
         store.close()
 
 
+def test_sync_once_reports_identity_error_without_traceback(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: (_ for _ in ()).throw(RuntimeError("public key missing")),
+        )
+
+        result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        assert result["ok"] is False
+        assert "device identity unavailable" in str(result.get("error") or "")
+
+        row = store.conn.execute(
+            "SELECT ok, error FROM sync_attempts WHERE peer_device_id = ? ORDER BY id DESC LIMIT 1",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert int(row["ok"] or 0) == 0
+        assert "device identity unavailable" in str(row["error"] or "")
+    finally:
+        store.close()
+
+
 def test_sync_once_backfills_tags_and_vectors_for_incoming_upserts(
     monkeypatch, tmp_path: Path
 ) -> None:
