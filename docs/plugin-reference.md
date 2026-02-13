@@ -36,7 +36,7 @@ Stream contract:
 - Preflight availability: `GET /api/raw-events/status`
 - Event streaming: `POST /api/raw-events`
 - Non-2xx and network failures are treated as stream failures.
-- There is no plugin-side CLI fallback path.
+- Raw events are delivered through the viewer ingest API.
 - Raw-event batches accepted by the viewer are retried by Python flush workers.
 
 Suggested settings:
