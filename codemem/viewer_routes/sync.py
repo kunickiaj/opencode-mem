@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import os
 import re
 from pathlib import Path
@@ -18,6 +19,23 @@ PAIRING_FILTER_HINT = (
     "This device does not yet enforce incoming project filters."
 )
 
+SYNC_STALE_AFTER_SECONDS = 10 * 60
+
+
+def _is_recent_iso(value: Any, *, window_s: int = SYNC_STALE_AFTER_SECONDS) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        ts = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=dt.UTC)
+    age_s = (dt.datetime.now(dt.UTC) - ts).total_seconds()
+    return 0 <= age_s <= window_s
+
 
 def _attempt_status(attempt: dict[str, Any]) -> str:
     if attempt.get("ok"):
@@ -34,7 +52,7 @@ def _attempt_address(attempt: dict[str, Any]) -> str | None:
     error = str(attempt.get("error") or "")
     if not error:
         return None
-    match = re.match(r"^(https?://\S+?)(?::\s|$)", error)
+    match = re.search(r"(https?://\S+?)(?::\s|$)", error)
     return match.group(1) if match else None
 
 
@@ -42,11 +60,30 @@ def _peer_status(peer: dict[str, Any]) -> dict[str, Any]:
     last_sync_at = peer.get("last_sync_at")
     last_ping_at = peer.get("last_seen_at")
     has_error = bool(peer.get("has_error"))
-    sync_status = "error" if has_error else ("ok" if last_sync_at else "unknown")
-    ping_status = "ok" if last_ping_at else "unknown"
+
+    sync_fresh = _is_recent_iso(last_sync_at)
+    ping_fresh = _is_recent_iso(last_ping_at)
+
+    if has_error and not (sync_fresh or ping_fresh):
+        peer_state = "offline"
+    elif has_error:
+        peer_state = "degraded"
+    elif sync_fresh or ping_fresh:
+        peer_state = "online"
+    elif last_sync_at or last_ping_at:
+        peer_state = "stale"
+    else:
+        peer_state = "unknown"
+
+    sync_status = (
+        "error" if has_error else ("ok" if sync_fresh else ("stale" if last_sync_at else "unknown"))
+    )
+    ping_status = "ok" if ping_fresh else ("stale" if last_ping_at else "unknown")
     return {
         "sync_status": sync_status,
         "ping_status": ping_status,
+        "peer_state": peer_state,
+        "fresh": bool(sync_fresh or ping_fresh),
         "last_sync_at": last_sync_at,
         "last_ping_at": last_ping_at,
     }
@@ -167,6 +204,24 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             item["status"] = _attempt_status(item)
             item["address"] = _attempt_address(item)
             attempts_items.append(item)
+
+        if daemon_state_value == "ok":
+            peer_states = {
+                str((peer.get("status") or {}).get("peer_state") or "") for peer in peers_items
+            }
+            latest_failed_recently = bool(
+                attempts_items
+                and attempts_items[0].get("status") == "error"
+                and _is_recent_iso(attempts_items[0].get("finished_at"))
+            )
+            if latest_failed_recently:
+                has_live_peer = bool(peer_states & {"online", "degraded"})
+                daemon_state_value = "degraded" if has_live_peer else "error"
+            elif "degraded" in peer_states:
+                daemon_state_value = "degraded"
+            elif peers_items and "online" not in peer_states:
+                daemon_state_value = "stale"
+        status_payload["daemon_state"] = daemon_state_value
 
         status_block: dict[str, Any] = {
             **status_payload,

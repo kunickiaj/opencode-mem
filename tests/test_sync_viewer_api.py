@@ -1,3 +1,4 @@
+import datetime as dt
 import http.client
 import json
 import threading
@@ -96,6 +97,220 @@ def test_sync_status_endpoint_includes_diagnostics_when_requested(
         assert payload.get("device_id") == "dev-1"
         assert payload.get("daemon_last_error") == "boom"
         assert payload.get("bind")
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_marks_stale_peers_and_surfaces_recent_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        stale_ts = (
+            (dt.datetime.now(dt.UTC) - dt.timedelta(hours=11)).isoformat().replace("+00:00", "Z")
+        )
+        failed_ts = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            """
+            INSERT INTO sync_peers(
+                peer_device_id, name, pinned_fingerprint, addresses_json,
+                last_seen_at, last_sync_at, last_error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "work",
+                "fp-peer",
+                json.dumps(["http://peer.local:7337"]),
+                stale_ts,
+                stale_ts,
+                None,
+                stale_ts,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                0,
+                "http://peer.local:7337: timeout",
+                failed_ts,
+                failed_ts,
+                0,
+                0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("daemon_state") == "error"
+        peers = payload.get("peers") or []
+        assert peers
+        peer_status = peers[0].get("status") or {}
+        assert peer_status.get("peer_state") == "stale"
+        assert peer_status.get("sync_status") == "stale"
+        assert peer_status.get("ping_status") == "stale"
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_ignores_stale_failure_for_top_level_error(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        stale_ts = (
+            (dt.datetime.now(dt.UTC) - dt.timedelta(hours=11)).isoformat().replace("+00:00", "Z")
+        )
+        conn.execute(
+            """
+            INSERT INTO sync_peers(
+                peer_device_id, name, pinned_fingerprint, addresses_json,
+                last_seen_at, last_sync_at, last_error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "work",
+                "fp-peer",
+                json.dumps(["http://peer.local:7337"]),
+                stale_ts,
+                stale_ts,
+                None,
+                stale_ts,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                0,
+                "http://peer.local:7337: timeout",
+                stale_ts,
+                stale_ts,
+                0,
+                0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("daemon_state") == "stale"
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_marks_degraded_when_peer_is_fresh_but_has_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        fresh_ts = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            """
+            INSERT INTO sync_peers(
+                peer_device_id, name, pinned_fingerprint, addresses_json,
+                last_seen_at, last_sync_at, last_error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "work",
+                "fp-peer",
+                json.dumps(["http://peer.local:7337"]),
+                fresh_ts,
+                fresh_ts,
+                "dial timeout",
+                fresh_ts,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("daemon_state") == "degraded"
+        peers = payload.get("peers") or []
+        assert peers
+        peer_status = peers[0].get("status") or {}
+        assert peer_status.get("peer_state") == "degraded"
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_attempt_address_parses_prefixed_multi_address_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        ts = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            """
+            INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                0,
+                "all addresses failed | http://a.local:7337: timeout || http://b.local:7337: refused",
+                ts,
+                ts,
+                0,
+                0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        attempts = payload.get("attempts") or []
+        assert attempts
+        assert attempts[0].get("address") == "http://a.local:7337"
     finally:
         server.shutdown()
 
